@@ -1,0 +1,3 @@
+recency_window: 6
+tool_result_max_chars: 500
+assistant_message_max_chars: 1200

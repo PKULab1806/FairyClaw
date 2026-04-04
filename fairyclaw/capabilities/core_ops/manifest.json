@@ -1,0 +1,219 @@
+{
+  "name": "CoreOperations",
+  "description": "Crucial tools for interacting with the file system (list, read, write, delete files) and executing code or shell commands (run python, run bash/shell commands). Select this if the user wants you to edit files, check directories, run scripts, or perform any local system operations.",
+  "always_enable_planner": false,
+  "always_enable_subagent": false,
+  "capabilities": [
+    {
+      "name": "list_session_files",
+      "description": "List all files in the current session (DB). Returns a JSON string of file list with id, name, and size.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      },
+      "script": "list_files.py",
+      "record_event": true
+    },
+    {
+      "name": "export_session_file",
+      "description": "Export a binary file (e.g. PDF, ZIP, Excel) from the session database to the local filesystem. Use this when you need to process binary files with python scripts or shell commands.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_id": {
+              "type": "string",
+              "description": "The ID of the file to export"
+            },
+            "target_path": {
+              "type": "string",
+              "description": "The local directory or full file path where the file should be saved. Defaults to current working directory if not provided."
+            }
+          },
+          "required": ["file_id"]
+        }
+      },
+      "script": "export_session_file.py",
+      "record_event": true
+    },
+    {
+      "name": "send_file",
+      "description": "Send a file to the user. This is the exclusive file-delivery tool for user-facing file output. Provide the absolute file path.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string",
+              "description": "The absolute path of the file to send."
+            }
+          },
+          "required": ["file_path"]
+        }
+      },
+      "script": "send_file.py",
+      "record_event": true
+    },
+    {
+      "name": "read_session_file",
+      "description": "Read the content of a file from the session (DB) by its ID. ONLY text files are supported. DO NOT use this for images or binary files.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_id": {
+              "type": "string",
+              "description": "The ID of the file to read"
+            }
+          },
+          "required": ["file_id"]
+        }
+      },
+      "script": "read_file.py",
+      "record_event": true
+    },
+    {
+      "name": "list_files",
+      "description": "List files in a directory on the local filesystem.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "dir_path": {
+              "type": "string",
+              "description": "The absolute path of the directory to list (optional, defaults to root)."
+            }
+          },
+          "required": []
+        }
+      },
+      "script": "fs_list.py",
+      "record_event": true
+    },
+    {
+      "name": "read_file",
+      "description": "Read the content of a file from the local filesystem. ONLY text files are supported. DO NOT use this for images or binary files.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string",
+              "description": "The absolute path of the file to read."
+            }
+          },
+          "required": ["file_path"]
+        }
+      },
+      "script": "fs_read.py",
+      "record_event": true
+    },
+    {
+      "name": "write_file",
+      "description": "Write content to a file on the local filesystem. Creates directories if needed.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string",
+              "description": "The absolute path of the file to write."
+            },
+            "content": {
+              "type": "string",
+              "description": "The content to write to the file."
+            }
+          },
+          "required": ["file_path", "content"]
+        }
+      },
+      "script": "fs_write.py",
+      "record_event": true
+    },
+    {
+      "name": "delete_file",
+      "description": "Delete a file or empty directory from the local filesystem.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string",
+              "description": "The absolute path of the file/directory to delete."
+            }
+          },
+          "required": ["file_path"]
+        }
+      },
+      "script": "fs_delete.py",
+      "record_event": true
+    },
+    {
+      "name": "execute_python",
+      "description": "Execute python code locally.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "description": "Python code to execute"
+            }
+          },
+          "required": ["code"]
+        }
+      },
+      "script": "execute_python.py",
+      "record_event": true
+    },
+    {
+      "name": "run_command",
+      "description": "Execute a shell command on the server. Returns stdout, stderr, and exit code.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string",
+              "description": "The command to execute (e.g. 'ls -la', 'git status')."
+            }
+          },
+          "required": ["command"]
+        }
+      },
+      "script": "run_command.py",
+      "record_event": true
+    },
+    {
+      "name": "code_review",
+      "description": "Guidelines for reviewing code quality and security. Call this tool to get the review checklist.",
+      "type": "Skill",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      },
+      "steps": [
+        "Check for security vulnerabilities (injection, hardcoded secrets).",
+        "Verify error handling and edge cases.",
+        "Ensure code follows PEP8 style guide.",
+        "Check for efficient resource usage."
+      ]
+    }
+  ]
+}

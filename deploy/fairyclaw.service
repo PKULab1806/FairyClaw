@@ -1,0 +1,14 @@
+[Unit]
+Description=FairyClaw API Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/fairyclaw
+EnvironmentFile=/opt/fairyclaw/config/fairyclaw.env
+ExecStart=/opt/fairyclaw/.venv/bin/python /opt/fairyclaw/main.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

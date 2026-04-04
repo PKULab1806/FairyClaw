@@ -1,0 +1,20 @@
+{
+  "name": "CompressionHooks",
+  "description": "Context compression hooks for token budget control.",
+  "always_enable_planner": true,
+  "always_enable_subagent": true,
+  "manifest_version": "1.1",
+  "capabilities": [],
+  "hooks": [
+    {
+      "name": "context_compression",
+      "stage": "before_llm_call",
+      "script": "context_compression.py",
+      "priority": 100,
+      "enabled": true,
+      "timeout_ms": 300,
+      "on_error": "continue",
+      "config": {}
+    }
+  ]
+}

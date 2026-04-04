@@ -1,0 +1,41 @@
+{
+  "name": "SubAgentTools",
+  "description": "Tools available only to sub-agent sessions for reporting terminal task outcomes.",
+  "always_enable_planner": false,
+  "always_enable_subagent": true,
+  "capabilities": [
+    {
+      "name": "report_subtask_done",
+      "description": "Only for Sub-Agent sessions. Report that delegated work has reached a terminal state and provide a structured summary for the parent session barrier merge.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "description": "Terminal status of this sub-task.",
+              "enum": ["completed", "failed"]
+            },
+            "summary": {
+              "type": "string",
+              "description": "Concise final result summary for parent planner."
+            },
+            "artifacts": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Optional output artifacts list."
+            },
+            "needs_followup": {
+              "type": "boolean",
+              "description": "Whether parent planner should do additional follow-up."
+            }
+          },
+          "required": ["summary"]
+        }
+      },
+      "script": "report_subtask_done.py",
+      "record_event": true
+    }
+  ]
+}

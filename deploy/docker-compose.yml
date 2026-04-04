@@ -1,0 +1,17 @@
+version: "3.9"
+services:
+  fairyclaw:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: fairyclaw:latest
+    container_name: fairyclaw
+    env_file:
+      - ../config/fairyclaw.env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../data:/app/data
+      - ../workspace:/app/workspace
+      - ../config:/app/config
+    restart: unless-stopped

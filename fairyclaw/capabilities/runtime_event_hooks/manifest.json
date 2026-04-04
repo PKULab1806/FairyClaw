@@ -1,0 +1,20 @@
+{
+  "name": "RuntimeEventHooks",
+  "description": "Plugin executors for asynchronous runtime events.",
+  "always_enable_planner": true,
+  "always_enable_subagent": true,
+  "manifest_version": "1.1",
+  "capabilities": [],
+  "hooks": [
+    {
+      "name": "file_upload_event_executor",
+      "stage": "event:file_upload_received",
+      "script": "file_upload_event_executor.py",
+      "priority": 100,
+      "enabled": true,
+      "timeout_ms": 300,
+      "on_error": "continue",
+      "config": {}
+    }
+  ]
+}

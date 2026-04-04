@@ -1,0 +1,101 @@
+{
+  "name": "AgentTools",
+  "description": "Tools for managing sub-agents and complex tasks. Use these tools to delegate work, manage long contexts, and perform parallel operations.",
+  "always_enable_planner": true,
+  "always_enable_subagent": false,
+  "capabilities": [
+    {
+      "name": "delegate_task",
+      "description": "Asynchronously delegates a task to a dedicated Sub-Agent. Use this for: 1) Complex multi-step tasks that need independent reasoning. 2) Tasks requiring processing of long content or multiple tools, to keep your main context clean. 3) Parallelizing independent tasks (call multiple times in one turn). 4) Any long-running or time-consuming operations. The Sub-Agent runs in the background. After calling this tool, you should inform the user that the task has started in the background and then wait patiently. Do not attempt to retry or ask the user for updates. The system will automatically wake you up and provide the results via a [System Notification] when all sub-tasks are completed.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "instruction": {
+              "type": "string",
+              "description": "The detailed instruction for the sub-agent. Be specific about the goal and expected output format."
+            },
+            "background": {
+              "type": "string",
+              "description": "Any necessary background information, context, or data snippets the sub-agent needs to know."
+            },
+            "task_type": {
+              "type": "string",
+              "description": "High-level category for routing/sub-agent profile only. Allowed: general | image | code. This field does NOT attach files. Do not confuse with `attachments`.",
+              "enum": ["general", "image", "code"]
+            },
+            "attachments": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "REQUIRED when you need the sub-agent to see files: each string must be (1) a session file_id from send_file — copy the FULL id exactly (normally `file_` plus 32 hex characters; do not truncate or paraphrase), OR (2) an absolute filesystem path readable by the server, OR (3) an http(s) URL. FORBIDDEN: do not list `image`, `general`, `code`, or any `task_type` value here — those belong only in `task_type`. Omit this array or leave empty if no files to pass."
+            }
+          },
+          "required": ["instruction"]
+        }
+      },
+      "script": "delegate_task.py",
+      "record_event": true
+    },
+    {
+      "name": "get_subtask_status",
+      "description": "Retrieves the execution status of all previously delegated background tasks (sub-agents). Use this when the user asks for an update or progress on tasks you have delegated.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      "script": "get_subtask_status.py",
+      "record_event": true
+    },
+    {
+      "name": "kill_subtask",
+      "description": "Kills/cancels a currently running background sub-task. Use this when the user asks to stop or cancel a specific task.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "sub_session_id": {
+              "type": "string",
+              "description": "The Task ID (sub_session_id) of the task to kill."
+            }
+          },
+          "required": ["sub_session_id"]
+        }
+      },
+      "script": "kill_subtask.py",
+      "record_event": true
+    },
+    {
+      "name": "message_subtask",
+      "description": "Sends a new user-style message to an existing sub-task session by enqueueing it into the runtime bus. If the target sub-task is already terminal, this tool reopens it and resumes execution.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "sub_session_id": {
+              "type": "string",
+              "description": "The Task ID (sub_session_id) or unique ID prefix of the target sub-task."
+            },
+            "message": {
+              "type": "string",
+              "description": "The follow-up instruction/message delivered into the target sub-task session as a user message."
+            },
+            "task_type": {
+              "type": "string",
+              "description": "Optional task type for resumed execution. Valid values: 'general', 'image', 'code'. If omitted, the tool infers from current running state, otherwise defaults to 'general'.",
+              "enum": ["general", "image", "code"]
+            }
+          },
+          "required": ["sub_session_id", "message"]
+        }
+      },
+      "script": "message_subtask.py",
+      "record_event": true
+    }
+  ]
+}

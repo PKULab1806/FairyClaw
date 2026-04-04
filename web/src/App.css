@@ -1,0 +1,248 @@
+.app-shell {
+  display: grid;
+  grid-template-columns: 360px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px;
+  background: #111827;
+  color: #e5e7eb;
+  border-right: 1px solid #1f2937;
+}
+
+.panel {
+  background: rgba(17, 24, 39, 0.78);
+  border: 1px solid #374151;
+  border-radius: 16px;
+  padding: 18px;
+}
+
+.panel h1,
+.panel h2 {
+  margin: 0 0 8px;
+  color: #f9fafb;
+}
+
+.muted,
+.status {
+  color: #9ca3af;
+}
+
+.muted.small {
+  font-size: 0.75rem;
+  line-height: 1.35;
+  margin-top: 4px;
+}
+
+.field,
+.upload-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.field span,
+.section-label {
+  font-size: 0.85rem;
+  color: #cbd5e1;
+}
+
+.field input,
+.composer textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #4b5563;
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: #0f172a;
+  color: #f8fafc;
+  font: inherit;
+}
+
+.upload-field {
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  min-height: 96px;
+  border: 1px dashed #4f46e5;
+  background: rgba(79, 70, 229, 0.12);
+  border-radius: 12px;
+  text-align: center;
+}
+
+.upload-field input {
+  display: none;
+}
+
+.primary,
+.session-chip,
+.pending-file button {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.primary {
+  margin-top: 12px;
+  background: linear-gradient(135deg, #4f46e5, #7c3aed);
+  color: white;
+}
+
+.primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.session-list,
+.pending-files {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.session-chip {
+  text-align: left;
+  background: #1f2937;
+  color: #e5e7eb;
+}
+
+.pending-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #0f172a;
+}
+
+.pending-file button {
+  background: #312e81;
+  color: #e0e7ff;
+}
+
+.error {
+  margin-top: 10px;
+  color: #fca5a5;
+}
+
+.chat-panel {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  background: #020617;
+}
+
+.messages {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.empty-state {
+  margin: auto;
+  text-align: center;
+  color: #94a3b8;
+}
+
+.message {
+  max-width: 760px;
+  padding: 16px 18px;
+  border-radius: 16px;
+  line-height: 1.6;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.25);
+}
+
+.message header {
+  margin-bottom: 6px;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #94a3b8;
+}
+
+.message.system {
+  background: #111827;
+  color: #d1d5db;
+}
+
+.message.user {
+  align-self: flex-end;
+  background: #312e81;
+  color: #eef2ff;
+}
+
+.message.assistant {
+  align-self: flex-start;
+  background: #172554;
+  color: #dbeafe;
+}
+
+.composer {
+  padding: 20px 24px 24px;
+  border-top: 1px solid #1f2937;
+  background: #0f172a;
+}
+
+.composer textarea {
+  resize: vertical;
+  min-height: 112px;
+}
+
+.composer-actions {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.file-list,
+.file-link {
+  margin-top: 8px;
+}
+
+.file-list {
+  padding-left: 18px;
+}
+
+.file-link,
+.file-list a,
+.file-list button.file-link {
+  color: #93c5fd;
+}
+
+button.file-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+  text-decoration: underline;
+}
+
+@media (max-width: 960px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    border-right: 0;
+    border-bottom: 1px solid #1f2937;
+  }
+
+  .composer-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

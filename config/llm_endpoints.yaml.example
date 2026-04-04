@@ -1,0 +1,48 @@
+default_profile: main
+fallback_profile: fallback
+profiles:
+  main:
+    api_base: https://api.openai.com/v1
+    model: gpt-4o
+    api_key_env: OPENAI_API_KEY
+    timeout_seconds: 300
+    temperature: 0.2
+  router:
+    api_base: https://api.openai.com/v1
+    model: gpt-4o
+    api_key_env: OPENAI_API_KEY
+    timeout_seconds: 300
+    temperature: 0.1
+  image:
+    api_base: https://api.openai.com/v1
+    model: gpt-4o
+    api_key_env: OPENAI_API_KEY
+    timeout_seconds: 300
+    temperature: 0.2
+  code:
+    api_base: https://api.openai.com/v1
+    model: gpt-4o
+    api_key_env: OPENAI_API_KEY
+    timeout_seconds: 300
+    temperature: 0.2
+  fallback:
+    api_base: https://api.openai.com/v1
+    model: gpt-4o-mini
+    api_key_env: OPENAI_API_KEY
+    timeout_seconds: 45
+    temperature: 0.2
+  # Remote embeddings: POST {api_base}/embeddings (OpenAI-compatible). Set model (required) and api_key_env.
+  # Changing vector size vs existing Qdrant points: use a new collection_name or delete local vectorstore data.
+  embedding:
+    type: embedding
+    backend: openai_compatible
+    model: text-embedding-3-small
+    api_base: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    timeout_seconds: 60
+  compaction_summarizer:
+    api_base: https://api.openai.com/v1
+    model: gpt-4o-mini
+    api_key_env: OPENAI_API_KEY
+    timeout_seconds: 30
+    temperature: 0.1

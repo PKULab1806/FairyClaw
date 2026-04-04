@@ -1,0 +1,6 @@
+top_k: 5
+token_cap: 1024
+similarity_threshold: 0.50
+embedding_profile: embedding
+vectorstore_path: ./data/vectorstore
+collection_name: fairyclaw_memory
