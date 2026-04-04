@@ -1,103 +1,99 @@
 # FairyClaw
 
-FairyClaw 是面向**后端长期运行**场景的异步 Agent 运行时：把会话调度、模型推理和能力扩展拆成清晰层次，让复杂任务在可并行、可恢复的前提下仍有一条**干净、可预期的主执行路径**。面向服务器部署场景，已打通端到端部署链路。
+FairyClaw is an async agent runtime built for **long-running server-side deployments**. It structures session scheduling, LLM inference, and capability extension into clear layers, so complex tasks can run in parallel and be resumed — while still following a **clean, predictable main execution path**.
 
 ```mermaid
 sequenceDiagram
   autonumber
-  participant Bus as 事件总线
-  participant Sched as 调度器
+  participant Bus as Event Bus
+  participant Sched as Scheduler
   participant Plan as Planner
   participant LLM as LLM
-  participant Exec as 工具执行
+  participant Exec as Tool Executor
 
-  Bus->>Sched: 待处理事件 / 唤醒
-  Sched->>Plan: 单步 turn
-  Note over Plan,LLM: Hook：tools_prepared · before_llm_call
-  Plan->>LLM: 一次推理请求
+  Bus->>Sched: Pending event / wakeup
+  Sched->>Plan: Single-step turn
+  Note over Plan,LLM: Hook: tools_prepared · before_llm_call
+  Plan->>LLM: One inference request
   LLM-->>Plan: assistant / tool_calls
-  Note over Plan: Hook：after_llm_response
-  alt 本轮有 tool_calls
-    Plan->>Exec: 顺序执行 + before/after_tool Hook
-    Exec-->>Plan: 结果
-  else 无工具
-    Plan->>Plan: 文本等 · 本轮收束
+  Note over Plan: Hook: after_llm_response
+  alt tool_calls present
+    Plan->>Exec: Execute sequentially + before/after_tool hooks
+    Exec-->>Plan: Results
+  else no tools
+    Plan->>Plan: Text response · turn closes
   end
-  Plan->>Bus: 必要时 follow-up（新事件再次入总线）
+  Plan->>Bus: follow-up if needed (new event re-enters the bus)
 ```
 
+---
 
+## Key Features
+
+**Event-driven, single-step advancement**
+Sessions are driven by runtime events. The Planner advances via a "one inference step → re-wakeup" loop rather than stuffing an entire task chain into a single request. The main path stays short and observable, making multi-session isolation, compensation, and monitoring straightforward.
+
+**Capability Groups: cluster first, route second**
+Capabilities are not a flat list of tool names. Related tools, Hooks, and extensions are declared together as a **Capability Group**. Sub-agents route between groups — first bucketing semantically similar capabilities, then enabling the tool set within the chosen bucket — collapsing "what to pick" from an unbounded tool list into a small set of structured decisions.
+
+**New Skill paradigm**
+Tools own "what can be called in one invocation"; Skills own "how to approach this class of task". Skills elevate reusable playbooks to first-class citizens — structured `steps` declared in the manifest give the model clear guidance on tool selection, ordering, and termination conditions.
+
+**Clean execution path + full plugin architecture**
+The core orchestration stays lean and well-bounded. Concrete capabilities are delivered via manifest + script: tools, skills, Turn Hooks, runtime event Hooks, and custom `event_types` are all registered declaratively rather than hard-coded in core.
+
+**Dual-process architecture**
+The Business process (runtime + Planner) and the Gateway process (user-facing HTTP API / OneBot adapters) communicate over an internal WebSocket bridge. Responsibilities are cleanly separated; the Gateway can scale or be replaced independently.
 
 ---
 
-## 核心特点
+## Documentation
 
-**事件化与单步推进**
-运行时事件驱动会话，Planner 以「单步推理 → 再唤醒」的方式推进，而不是把整条任务链塞进一次请求。主路径短、状态外显，便于观测、补偿与多会话隔离。
-
-**能力组：先聚类，再路由**
-能力不是零散工具名的集合，而是按**能力组（Capability Group）**成组声明：相关工具、Hook 与扩展约定放在同一组里。子 Agent 侧在组与组之间做路由选择——先按语义归桶，再在桶内启用工具集，把「选什么」从无穷工具名收敛到少量结构化决策。
-
-**Skill 新范式**
-Tool 负责「一次能调用什么」；Skill 负责「这一类事该怎么打」。Skill 把**可复用打法**做成一等公民——在 manifest 里用结构化 `steps` 声明规程，让模型在选工具、排顺序、何时收束上有明确抓手。
-
-**干净执行路径 + 全面插件化**
-核心编排保持精简、边界清楚；具体能力则尽量 manifest + 脚本落地：工具、技能、Turn Hook、运行时事件 Hook、以及自定义 `event_types` 等，都走注册与声明，而不是改 core 里的硬编码。
-
-**双进程架构**
-Business 进程（运行时 + Planner）与 Gateway 进程（用户侧 HTTP API / OneBot 适配器）通过内部 WebSocket 桥接通信，职责分离，Gateway 可独立扩展。
+| Document | Contents |
+|---|---|
+| [AI_SYSTEM_GUIDE.md](AI_SYSTEM_GUIDE.md) | **Canonical system reference**: architecture, event model, Hook protocol, Sub-Agent mechanics, development conventions (useful for both AI assistants and human developers) |
+| [LAYOUT.md](LAYOUT.md) | Module responsibility map: every directory and key file at a glance |
+| [docs/GATEWAY_ENVELOPE.md](docs/GATEWAY_ENVELOPE.md) | Gateway–Business WebSocket bridge protocol: frame structure, lifecycle, file transfer |
+| [DEPLOY.md](DEPLOY.md) | Deployment guide: Python venv, Docker Compose, systemd, Web UI, OneBot/NapCat setup |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution guide: capability group extension, Hook boundary types, manifest schema |
 
 ---
 
-## 文档导航
-
-
-| 文档                                                   | 内容                                                                |
-| ---------------------------------------------------- | ----------------------------------------------------------------- |
-| [AI_SYSTEM_GUIDE.md](AI_SYSTEM_GUIDE.md)             | **权威系统文档**：架构设计、事件模型、Hook 协议、Sub-Agent 机制、开发约定（AI 与人类开发者均可参考）     |
-| [LAYOUT.md](LAYOUT.md)                               | 模块职责地图：每个目录与关键文件的职责一览                                             |
-| [docs/GATEWAY_ENVELOPE.md](docs/GATEWAY_ENVELOPE.md) | Gateway–Business WebSocket 桥接信封协议：帧结构、生命周期、文件传输                   |
-| [DEPLOY.md](DEPLOY.md)                               | 部署指南：Python venv、Docker Compose、systemd、Web UI 与 OneBot/NapCat 配置 |
-| [CONTRIBUTING.md](CONTRIBUTING.md)                   | 贡献指南：能力组扩展入口、Hook 边界类型、manifest 结构                                |
-
-
----
-
-## 快速开始
+## Quick Start
 
 ```bash
-# 1. 安装
+# 1. Install
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 
-# 2. 配置
+# 2. Configure
 cp config/fairyclaw.env.example config/fairyclaw.env
 cp config/llm_endpoints.yaml.example config/llm_endpoints.yaml
-# 编辑两个文件，填入 LLM API 地址、token 等
+# Edit both files: set your LLM API endpoint, tokens, etc.
 
-# 3. 启动 Business 进程
+# 3. Start the Business process
 uvicorn fairyclaw.main:app --host 0.0.0.0 --port 8000
 
-# 4. 启动 Gateway 进程（另一个终端）
+# 4. Start the Gateway process (separate terminal)
 uvicorn fairyclaw.gateway.main:app --host 0.0.0.0 --port 8081
 ```
 
-详细步骤（Docker、systemd、Web UI、OneBot/NapCat 接入）请参阅 [DEPLOY.md](DEPLOY.md)。
+For detailed steps — Docker, systemd, Web UI, OneBot/NapCat integration — see [DEPLOY.md](DEPLOY.md).
 
 ---
 
-## 扩展能力
+## Extending Capabilities
 
-最快的扩展方式是在 `fairyclaw/capabilities/` 下新增一个能力组目录：
+The fastest way to extend FairyClaw is to add a capability group directory under `fairyclaw/capabilities/`:
 
 ```
 fairyclaw/capabilities/my_group/
-├── manifest.json    ← 声明工具、Skill、Hook
+├── manifest.json    ← declare tools, skills, hooks
 └── scripts/
-    └── my_tool.py   ← 工具实现
+    └── my_tool.py   ← tool implementation
 ```
 
-Hook 边界类型、manifest 字段约定与完整示例参见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+For Hook boundary types, manifest field conventions, and complete examples, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
