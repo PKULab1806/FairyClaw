@@ -16,7 +16,7 @@ from fairyclaw.core.agent.hooks.runtime import HookRuntime
 from fairyclaw.core.agent.routing.router import ToolRouter
 from fairyclaw.core.capabilities.registry import CapabilityRegistry
 from fairyclaw.infrastructure.llm.factory import create_default_llm_client, create_llm_client
-from fairyclaw.tools.runtime import SkillRuntime
+from fairyclaw.tools.runtime import ToolRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ class BasePlanner:
         capabilities_dir = settings.capabilities_dir
         self.registry = CapabilityRegistry(capabilities_dir)
         self.router = ToolRouter(self.registry)
-        self.skill_runtime = SkillRuntime(self.registry)
+        self.tool_runtime = ToolRuntime(self.registry)
         self.hook_runtime = HookRuntime()
         self.hook_stage_runner = HookStageRunner(self.registry, self.hook_runtime)
         self.context_pipeline = ContextPipelineExecutor()

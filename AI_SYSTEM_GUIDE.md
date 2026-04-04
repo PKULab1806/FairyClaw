@@ -10,7 +10,7 @@ Key characteristics:
 - Session-level scheduling via the Runtime Event Bus; no more long loops inside a single request.
 - The Planner executes exactly one inference step per wakeup, then re-publishes an event to advance.
 - The main agent can delegate to multiple Sub-Agents running concurrently; results are aggregated via a barrier and flow back to the main session.
-- Tools and Skills are dynamically registered via Manifest + Script, keeping the system fully pluggable.
+- Tools are dynamically registered via Manifest + Script, keeping the system fully pluggable.
 - Capability groups can declare custom `event_types` in `manifest.json` for pluggable runtime event dispatch.
 - The Hook lifecycle has exactly five stages: `tools_prepared` / `before_llm_call` / `after_llm_response` / `before_tool_call` / `after_tool_call`.
 - `before_llm_call` receives the full typed history IR by default, not raw `dict` history.
@@ -306,7 +306,16 @@ Reason: `run_session` parses `task_type` from `event.type` and `event.payload` w
 6. If a capability group needs to publish extension events asynchronously, declare `event_types` at the top of the manifest; both short string lists and objects with `description` / `schema` are supported.
 7. The corresponding hook stage is `event:<event_type>`; publish via `publish_runtime_event("<event_type>", ...)`.
 
-### 10.1 Context Compression and Memory Capability Group Conventions
+### 10.1 SourcedResearch Capability Group
+
+`sourced_research/` provides a three-tool citation pipeline for sub-agents:
+- `find_evidence_sources` (step 1): DuckDuckGo search; returns numbered candidate URLs.
+- `extract_evidence_excerpt` (step 2): Fetches one URL and returns focused body text as citation evidence.
+- `format_answer_with_citations` (step 3): Validates that every citation has a non-empty URL + excerpt, then returns a Markdown answer with a Sources section.
+
+Visibility: `always_enable_planner: false`, `always_enable_subagent: false`. The `ToolRouter` selects it when a delegated task description indicates verifiable, source-backed research is required. Infrastructure shared with `web_tools` lives in `fairyclaw/infrastructure/web/` (`ddgs_client.py`, `page_text.py`).
+
+### 10.2 Context Compression and Memory Capability Group Conventions
 
 - `compression_hooks`
   - Responsible for token budget control; compresses only `history_items`, then rebuilds `llm_messages` via `LlmMessageAssembler`.

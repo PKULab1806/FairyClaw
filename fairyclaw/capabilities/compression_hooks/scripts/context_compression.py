@@ -57,10 +57,16 @@ async def execute_hook(
         )
         return HookStageOutput(status=HookStatus.SKIP, patched_payload=payload)
 
+    sub_u_end = (
+        _first_user_message_exclusive_end(list(payload.turn.history_items))
+        if payload.turn.is_sub_session
+        else 0
+    )
     compressed_history = _truncate_large_items(
         history_items=payload.turn.history_items,
         tool_result_max_chars=int(config["tool_result_max_chars"]),
         assistant_message_max_chars=int(config["assistant_message_max_chars"]),
+        sub_session_user_prefix_end=sub_u_end,
     )
     if _count_rebuilt_prompt(counter, payload, compressed_history, system_prompt, extra_system_messages) <= token_budget:
         return _build_output(
@@ -73,10 +79,16 @@ async def execute_hook(
             token_budget=token_budget,
         )
 
-    compressed_history = _keep_recent_history(
+    before_recent = compressed_history
+    compressed_history, tail_start = _keep_recent_history(
         history_items=compressed_history,
         recent_message_limit=int(config["recency_window"]),
     )
+    if payload.turn.is_sub_session:
+        # tail_start indexes into before_recent; kept slice is before_recent[tail_start:].
+        pe = _first_user_message_exclusive_end(before_recent)
+        if pe > 0:
+            compressed_history = before_recent[:pe] + before_recent[max(pe, tail_start) :]
     if _count_rebuilt_prompt(counter, payload, compressed_history, system_prompt, extra_system_messages) <= token_budget:
         return _build_output(
             payload,
@@ -88,26 +100,28 @@ async def execute_hook(
             token_budget=token_budget,
         )
 
-    compressed_history = [item for item in compressed_history if not isinstance(item, ToolCallRound)]
-    if _count_rebuilt_prompt(counter, payload, compressed_history, system_prompt, extra_system_messages) <= token_budget:
-        return _build_output(
+    # Do not strip ToolCallRound globally: that drops the newest tool results and breaks
+    # assistant/tool continuity (model may re-call tools or deadlock). Prefer dropping
+    # older prefix entries only (below).
+    # Sub-sessions: never drop the first user block (delegated task instruction); trim after it.
+
+    sub_prefix = (
+        _first_user_message_exclusive_end(compressed_history) if payload.turn.is_sub_session else 0
+    )
+    while (
+        len(compressed_history) > sub_prefix + _latest_turn_suffix_length(compressed_history)
+        and _count_rebuilt_prompt(
+            counter,
             payload,
             compressed_history,
             system_prompt,
             extra_system_messages,
-            counter=counter,
-            original_tokens=original_tokens,
-            token_budget=token_budget,
         )
-
-    while compressed_history and _count_rebuilt_prompt(
-        counter,
-        payload,
-        compressed_history,
-        system_prompt,
-        extra_system_messages,
-    ) > token_budget:
-        compressed_history = compressed_history[1:]
+        > token_budget
+    ):
+        compressed_history = (
+            compressed_history[:sub_prefix] + compressed_history[sub_prefix + 1 :]
+        )
 
     return _build_output(
         payload,
@@ -183,14 +197,51 @@ def _extract_system_messages(payload: BeforeLlmCallHookPayload) -> tuple[str, li
     return prompt_text, extra_messages
 
 
+def _first_user_message_exclusive_end(history_items: list[ChatHistoryItem]) -> int:
+    """Index past the first user SessionMessageBlock (delegated task is usually first). 0 if none."""
+    for idx, item in enumerate(history_items):
+        if isinstance(item, SessionMessageBlock) and item.role.value == "user":
+            return idx + 1
+    return 0
+
+
+def _latest_turn_suffix_length(history_items: list[ChatHistoryItem]) -> int:
+    """Length of trailing slice to keep intact: last assistant + its tool rounds, or one session block.
+
+    Matches how ``LlmMessageAssembler`` groups assistant ``tool_calls`` with following ``ToolCallRound``
+    rows so we never drop or truncate only part of that batch.
+    """
+    n = len(history_items)
+    if n == 0:
+        return 0
+    start = n - 1
+    while start >= 0 and isinstance(history_items[start], ToolCallRound):
+        start -= 1
+    if start >= 0 and isinstance(history_items[start], SessionMessageBlock):
+        return n - start
+    return n - start - 1
+
+
 def _truncate_large_items(
     history_items: Iterable[ChatHistoryItem],
     tool_result_max_chars: int,
     assistant_message_max_chars: int,
+    *,
+    sub_session_user_prefix_end: int = 0,
 ) -> list[ChatHistoryItem]:
     """Clamp oversized tool results and assistant messages."""
+    items = list(history_items)
+    if not items:
+        return []
+    protect = _latest_turn_suffix_length(items)
+    first_protected = len(items) - protect
+    head_keep = max(0, sub_session_user_prefix_end)
     truncated: list[ChatHistoryItem] = []
-    for item in history_items:
+    for idx, item in enumerate(items):
+        preserve = idx >= first_protected or idx < head_keep
+        if preserve:
+            truncated.append(item)
+            continue
         if isinstance(item, ToolCallRound):
             truncated.append(
                 replace(
@@ -217,8 +268,15 @@ def _truncate_assistant_message(item: SessionMessageBlock, max_chars: int) -> Se
     return rebuilt or item
 
 
-def _keep_recent_history(history_items: list[ChatHistoryItem], recent_message_limit: int) -> list[ChatHistoryItem]:
-    """Keep only a recent conversational window from the tail of history."""
+def _keep_recent_history(
+    history_items: list[ChatHistoryItem],
+    recent_message_limit: int,
+) -> tuple[list[ChatHistoryItem], int]:
+    """Keep only a recent conversational window from the tail of history.
+
+    Returns:
+        (kept_items, tail_start_index) where original slice was history_items[tail_start_index:].
+    """
     kept: deque[ChatHistoryItem] = deque()
     seen_message_blocks = 0
     for item in reversed(history_items):
@@ -227,7 +285,9 @@ def _keep_recent_history(history_items: list[ChatHistoryItem], recent_message_li
             seen_message_blocks += 1
             if seen_message_blocks >= recent_message_limit:
                 break
-    return list(kept)
+    kept_list = list(kept)
+    tail_start = len(history_items) - len(kept_list)
+    return kept_list, tail_start
 
 
 def _count_prompt_tokens(

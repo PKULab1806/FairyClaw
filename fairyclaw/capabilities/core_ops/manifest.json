@@ -196,24 +196,6 @@
       },
       "script": "run_command.py",
       "record_event": true
-    },
-    {
-      "name": "code_review",
-      "description": "Guidelines for reviewing code quality and security. Call this tool to get the review checklist.",
-      "type": "Skill",
-      "schema": {
-        "parameters": {
-          "type": "object",
-          "properties": {},
-          "required": []
-        }
-      },
-      "steps": [
-        "Check for security vulnerabilities (injection, hardcoded secrets).",
-        "Verify error handling and edge cases.",
-        "Ensure code follows PEP8 style guide.",
-        "Check for efficient resource usage."
-      ]
     }
   ]
 }

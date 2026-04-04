@@ -25,6 +25,7 @@ THINK_BLOCK_PATTERN = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | r
 THINK_TAG_PATTERN = re.compile(r"</?think\b[^>]*>", re.IGNORECASE)
 SUMMARY_SECTION_MARKERS = (
     "User intent:",
+    "Tool trajectory",
     "Changes made:",
     "Key decisions:",
     "Next steps:",
@@ -34,6 +35,8 @@ DEFAULT_CONFIG = {
     "compaction_max_history_items": 120,
     "compaction_min_history_items": 12,
     "summary_char_limit": 1500,
+    # When prompt already exceeds token_budget, still inject a short summary up to this many tokens.
+    "summary_min_reserve_tokens": 256,
 }
 
 
@@ -67,12 +70,22 @@ async def execute_hook(
     tools_tokens = counter.count_json([tool.to_openai_tool() for tool in payload.tools])
     current_tokens = counter.count_messages(payload.turn.llm_messages) + tools_tokens
     available = token_budget - current_tokens
-    if available <= 32:
-        return HookStageOutput(status=HookStatus.SKIP, patched_payload=payload)
+    min_reserve = max(64, int(config.get("summary_min_reserve_tokens", DEFAULT_CONFIG["summary_min_reserve_tokens"])))
+    if available > 32:
+        fit_tokens = available
+    else:
+        fit_tokens = min_reserve
+        logger.debug(
+            "memory_pre_context: injecting summary despite tight/over budget session_id=%s "
+            "available=%s fit_tokens=%s (min_reserve)",
+            payload.turn.session_id,
+            available,
+            fit_tokens,
+        )
 
     summary_text = _fit_summary_to_budget(
         text=summary_source,
-        available_tokens=available,
+        available_tokens=fit_tokens,
         counter=counter,
         char_limit=int(config["summary_char_limit"]),
     )
@@ -90,6 +103,13 @@ async def execute_hook(
         llm_messages = [memory_message, *llm_messages]
 
     patched_payload = replace(payload, turn=replace(payload.turn, llm_messages=llm_messages))
+    if available <= 32:
+        logger.info(
+            "memory_pre_context applied over budget: session_id=%s available_tokens=%s summary_tokens≈%s",
+            payload.turn.session_id,
+            available,
+            counter.count_text(summary_text),
+        )
     return HookStageOutput(
         status=HookStatus.OK,
         patched_payload=patched_payload,
@@ -146,6 +166,9 @@ async def _summarize_history(transcript: str, profile_name: str) -> str:
                         "content": (
                             "Summarize the conversation into a durable memory anchor. "
                             "Keep file paths, URLs, errors, decisions, and unresolved tasks. "
+                            "You MUST include a clear narrative of tool usage: which tools were called, "
+                            "with what key arguments (e.g. search queries, URLs), and what each result "
+                            "contributed to the assistant's next decision. "
                             "Return only the final summary. Do not include analysis, reasoning, "
                             "or any <think> tags."
                         ),
@@ -155,6 +178,8 @@ async def _summarize_history(transcript: str, profile_name: str) -> str:
                         "content": (
                             "Summarize the following transcript with sections:\n"
                             "- User intent\n"
+                            "- Tool trajectory and decisions (chronological: tool name, key arguments, "
+                            "outcome gist, and how it steered the next step)\n"
                             "- Changes made\n"
                             "- Key decisions\n"
                             "- Next steps\n\n"
@@ -219,7 +244,7 @@ def _extract_compaction_facts(history: list[ChatHistoryItem]) -> dict[str, objec
 def _fit_summary_to_budget(text: str, available_tokens: int, counter: TokenCounter, char_limit: int) -> str:
     limited = text[:char_limit].strip()
     if available_tokens <= 0:
-        return ""
+        return limited[:200].rstrip() + ("\n...[truncated]" if len(limited) > 200 else "")
     if counter.count_text(limited) <= available_tokens:
         return limited
     low = 0

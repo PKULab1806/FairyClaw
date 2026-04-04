@@ -36,11 +36,11 @@ Sessions are driven by runtime events. The Planner advances via a "one inference
 **Capability Groups: cluster first, route second**
 Capabilities are not a flat list of tool names. Related tools, Hooks, and extensions are declared together as a **Capability Group**. Sub-agents route between groups — first bucketing semantically similar capabilities, then enabling the tool set within the chosen bucket — collapsing "what to pick" from an unbounded tool list into a small set of structured decisions.
 
-**New Skill paradigm**
-Tools own "what can be called in one invocation"; Skills own "how to approach this class of task". Skills elevate reusable playbooks to first-class citizens — structured `steps` declared in the manifest give the model clear guidance on tool selection, ordering, and termination conditions.
+**Structured capability groups with built-in workflows —— new Skills defination instead of Skill.md**
+Capability groups bundle related tools together with descriptions that guide tool selection order. The `SourcedResearch` group is an example: three tools enforce a search → excerpt → citation-format pipeline so sub-agents produce verifiable, citation-backed answers rather than unsupported claims. This group is not exposed to the main Planner; it is enabled only when the `ToolRouter` selects it for a delegated sub-task.
 
 **Clean execution path + full plugin architecture**
-The core orchestration stays lean and well-bounded. Concrete capabilities are delivered via manifest + script: tools, skills, Turn Hooks, runtime event Hooks, and custom `event_types` are all registered declaratively rather than hard-coded in core.
+The core orchestration stays lean and well-bounded. Concrete capabilities are delivered via manifest + script: tools, Turn Hooks, runtime event Hooks, and custom `event_types` are all registered declaratively rather than hard-coded in core.
 
 **Dual-process architecture**
 The Business process (runtime + Planner) and the Gateway process (user-facing HTTP API / OneBot adapters) communicate over an internal WebSocket bridge. Responsibilities are cleanly separated; the Gateway can scale or be replaced independently.

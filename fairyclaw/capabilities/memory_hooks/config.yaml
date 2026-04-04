@@ -24,3 +24,5 @@ similar_m_messages: 3
 compaction_max_history_items: 120
 compaction_min_history_items: 12
 summary_char_limit: 1500
+# When the prompt already exceeds context_token_budget, still inject [SessionCompaction] up to this many tokens.
+summary_min_reserve_tokens: 256

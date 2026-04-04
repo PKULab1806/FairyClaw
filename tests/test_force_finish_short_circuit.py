@@ -160,7 +160,7 @@ def test_after_llm_force_finish_skips_tool_execution_and_follow_up() -> None:
     planner.hook_stage_runner.run_stage = fake_run_stage
     planner.context_pipeline.run = fake_context_pipeline_run
     planner.tool_pipeline.run_after_llm_response = fake_after_llm_response
-    planner.skill_runtime.execute = fake_execute
+    planner.tool_runtime.execute = fake_execute
     planner_module.publish_runtime_event = fake_publish_runtime_event
     try:
         asyncio.run(
@@ -239,7 +239,7 @@ def test_before_tool_call_force_finish_skips_tool_and_follow_up() -> None:
     planner.hook_stage_runner.run_stage = fake_run_stage
     planner.context_pipeline.run = fake_context_pipeline_run
     planner.tool_pipeline.run_after_llm_response = fake_after_llm_response
-    planner.skill_runtime.execute = fake_execute
+    planner.tool_runtime.execute = fake_execute
     planner_module.publish_runtime_event = fake_publish_runtime_event
     try:
         asyncio.run(
@@ -319,7 +319,7 @@ def test_after_tool_call_force_finish_skips_follow_up() -> None:
     planner.hook_stage_runner.run_stage = fake_run_stage
     planner.context_pipeline.run = fake_context_pipeline_run
     planner.tool_pipeline.run_after_llm_response = fake_after_llm_response
-    planner.skill_runtime.execute = fake_execute
+    planner.tool_runtime.execute = fake_execute
     planner_module.publish_runtime_event = fake_publish_runtime_event
     try:
         asyncio.run(

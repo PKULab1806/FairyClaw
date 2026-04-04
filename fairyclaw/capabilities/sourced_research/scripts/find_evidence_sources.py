@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 FairyClaw contributors, PKU DS Lab
+"""Step 1 of the sourced-research pipeline: web search for candidate sources."""
+
 from typing import Any, Dict
 
 from fairyclaw.core.capabilities.models import ToolContext
@@ -15,20 +17,20 @@ def _proxy() -> str:
 
 
 async def execute(args: Dict[str, Any], context: ToolContext) -> str:
-    """Execute DuckDuckGo search and return formatted top results.
+    """Search the web and return a numbered list of candidate source URLs.
 
     Args:
-        args (Dict[str, Any]): Tool arguments containing ``query`` and optional ``max_results``.
+        args (Dict[str, Any]): Tool arguments: ``query`` (required), ``max_results`` (optional, default 6).
         context (ToolContext): Tool runtime context.
 
     Returns:
-        str: Human-readable search results list or standardized error message.
+        str: Numbered list of sources (title, URL, snippet) or an error message.
     """
     query = args.get("query")
     if not query:
-        return "Error: Query is required."
+        return "Error: query is required."
 
-    max_results = int(args.get("max_results", 5))
+    max_results = int(args.get("max_results", 6))
     proxy_url = _proxy() or None
 
     try:
@@ -36,12 +38,15 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
     except ImportError as exc:
         return f"Error: {exc}"
     except Exception as exc:
-        return f"Error performing search: {exc}"
+        return f"Error searching the web: {exc}"
 
     if not results:
-        return f"No results found for query: {query}. Try refining your search or checking your proxy settings."
+        return f"No sources found for: {query}. Try a more specific query."
 
-    lines = []
+    lines = ["Candidate sources (pass these URLs to extract_evidence_excerpt):\n"]
     for i, r in enumerate(results, 1):
-        lines.append(f"[{i}] {r.title}\n    Link: {r.href}\n    Snippet: {r.body}\n")
+        lines.append(f"[{i}] {r.title}")
+        lines.append(f"    URL: {r.href}")
+        lines.append(f"    Snippet: {r.body}\n")
+
     return "\n".join(lines)

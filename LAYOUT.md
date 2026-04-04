@@ -139,6 +139,7 @@ Pluggable capability groups. Each subdirectory is a group:
 | `sub_agent_tools/` | `report_subtask_done`. Used by sub-agents to signal completion. |
 | `core_ops/` | File system tools, Python execution, shell commands, file export. |
 | `web_tools/` | Web search, page fetch, file download. |
+| `sourced_research/` | Citation-backed research pipeline for sub-agents: `find_evidence_sources` → `extract_evidence_excerpt` → `format_answer_with_citations`. Not always-enabled; selected by `ToolRouter` for tasks requiring verifiable sources. |
 | `memory_hooks/` | Hybrid memory extraction and context injection hooks. |
 | `rag_hooks/` | RAG retrieval hook (before_llm_call). |
 | `compression_hooks/` | Context compression hook to fit token budgets. |
@@ -160,6 +161,7 @@ Adapters and services with no framework coupling:
 | `embedding/` | `service.py` — hashing-based and OpenAI-compatible embedding backends. |
 | `files/` | `file_kind.py` — magic-byte file type detection for inbound uploads. |
 | `tokenizer/` | `counter.py` — token counting via tiktoken. |
+| `web/` | `ddgs_client.py` — async DuckDuckGo search wrapper; `page_text.py` — HTTP fetch + BeautifulSoup text extraction. Shared by `web_tools` and `sourced_research`. |
 | `logging_setup.py` | Root and `fairyclaw` logger initialization with structured formatting. |
 
 ---

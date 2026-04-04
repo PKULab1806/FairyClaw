@@ -216,7 +216,7 @@ def get_context_db(context: ToolContext) -> tuple[Any, str | None]:
 
 
 class CapabilityBase(BaseModel):
-    """Base capability schema shared by tools and skills."""
+    """Base capability schema shared by tools and hooks."""
 
     name: str
     description: str
@@ -229,13 +229,6 @@ class ToolCapability(CapabilityBase):
     schema_definition: Dict[str, Any] = Field(..., alias="schema")
     script: str
     record_event: bool = True
-
-class SkillCapability(CapabilityBase):
-    """Define one skill capability loaded from manifest."""
-
-    type: str = "Skill"
-    schema_definition: Dict[str, Any] = Field(default_factory=lambda: {"parameters": {"type": "object", "properties": {}}}, alias="schema")
-    steps: List[str] = []
 
 
 class HookErrorPolicy(str, Enum):
@@ -302,15 +295,6 @@ class CapabilityGroup(BaseModel):
             List[ToolCapability]: Parsed tool capability list.
         """
         return [ToolCapability(**c) for c in self.capabilities if c.get("type") == "Tool"]
-
-    @property
-    def skills(self) -> List[SkillCapability]:
-        """Return skill capabilities in this group.
-
-        Returns:
-            List[SkillCapability]: Parsed skill capability list.
-        """
-        return [SkillCapability(**c) for c in self.capabilities if c.get("type") == "Skill"]
 
     @property
     def hook_capabilities(self) -> List[HookCapability]:

@@ -547,7 +547,7 @@ class Planner(BasePlanner):
                 f"Tool call requested: session={session_id}, tool={func_name}, call_id={call_id}, args={args_summary}"
             )
             try:
-                tool_result_raw = await self.skill_runtime.execute(
+                tool_result_raw = await self.tool_runtime.execute(
                     tool_name=func_name,
                     arguments_json=args_json,
                     session_id=session_id,

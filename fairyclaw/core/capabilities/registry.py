@@ -18,7 +18,6 @@ from fairyclaw.core.capabilities.models import (
     CapabilityGroup,
     EventTypeDefinition,
     HookDefinition,
-    SkillCapability,
     ToolCapability,
     ToolContext,
 )
@@ -41,7 +40,6 @@ class CapabilityRegistry:
         self.capabilities_dir = Path(capabilities_dir)
         self.groups: Dict[str, CapabilityGroup] = {}
         self.tools: Dict[str, ToolCapability] = {}
-        self.skills: Dict[str, SkillCapability] = {}
         self.event_types: Dict[str, EventTypeDefinition] = {}
         self.hooks: Dict[str, list[HookDefinition]] = {}
         self.tool_executors: Dict[str, Callable[[Dict[str, Any], ToolContext], Any]] = {}
@@ -78,9 +76,6 @@ class CapabilityRegistry:
                                 script_path = (group_dir / "scripts" / tool_def.script).resolve()
                                 self._load_tool_executor(tool_def.name, script_path)
                         
-                        # Register Skills
-                        for skill_def in group.skills:
-                            self.skills[skill_def.name] = skill_def
                         # Register custom runtime events
                         for event_type_def in group.event_type_definitions:
                             self.event_types[event_type_def.name] = event_type_def
@@ -199,7 +194,7 @@ class CapabilityRegistry:
         """
         profiles = []
         for name, group in self.groups.items():
-            tool_names = [t.name for t in group.tools] + [s.name for s in group.skills]
+            tool_names = [t.name for t in group.tools]
             profiles.append({
                 "group_name": group.name,
                 "description": group.description,
@@ -276,51 +271,26 @@ class CapabilityRegistry:
         target_groups: Iterable[CapabilityGroup] = self.groups.values()
         if group_names is not None:
             target_groups = [g for g in self.groups.values() if g.name in group_names]
-            
+
         allowed_tool_names = set()
-        allowed_skill_names = set()
-        
         for g in target_groups:
             for t in g.tools:
                 allowed_tool_names.add(t.name)
-            for s in g.skills:
-                allowed_skill_names.add(s.name)
-        
+
         for name, tool in self.tools.items():
             if name in exclude_tools:
                 continue
             if group_names is not None and name not in allowed_tool_names:
                 continue
             schema = tool.schema_definition.copy()
-            
-            function_def = {
-                "name": name,
-                "description": tool.description,
-                "parameters": schema.get("parameters", {})
-            }
-            
             tools_schema.append({
                 "type": "function",
-                "function": function_def
+                "function": {
+                    "name": name,
+                    "description": tool.description,
+                    "parameters": schema.get("parameters", {}),
+                },
             })
-            
-        for name, skill in self.skills.items():
-            if name in exclude_tools:
-                continue
-            if group_names is not None and name not in allowed_skill_names:
-                continue
-            schema = skill.schema_definition.copy() if skill.schema_definition else {"parameters": {"type": "object", "properties": {}}}
-            
-            function_def = {
-                "name": name,
-                "description": skill.description,
-                "parameters": schema.get("parameters", {})
-            }
-            
-            tools_schema.append({
-                "type": "function",
-                "function": function_def
-            })
-            
+
         return tools_schema
 

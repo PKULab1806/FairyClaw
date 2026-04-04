@@ -1,0 +1,97 @@
+{
+  "name": "SourcedResearch",
+  "description": "Structured research workflow that produces verifiable, citation-backed answers. Use when the task explicitly requires traceable sources that the user can check — e.g. fact-checking, literature surveys, or any answer where fabricated references are unacceptable. Provides a three-step pipeline: search → extract excerpt → format with citations.",
+  "always_enable_planner": false,
+  "always_enable_subagent": false,
+  "capabilities": [
+    {
+      "name": "find_evidence_sources",
+      "description": "STEP 1 of 3 in the sourced-research pipeline. Search the web for sources relevant to a research question and return a numbered list of candidate URLs with title and snippet. You MUST call this tool first before fetching any page content. Only pass URLs from this tool's output to extract_evidence_excerpt — do not invent or reuse URLs from memory.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "The research question or search query."
+            },
+            "max_results": {
+              "type": "integer",
+              "description": "Maximum number of candidate sources to return (default: 6).",
+              "default": 6
+            }
+          },
+          "required": ["query"]
+        }
+      },
+      "script": "find_evidence_sources.py",
+      "record_event": true
+    },
+    {
+      "name": "extract_evidence_excerpt",
+      "description": "STEP 2 of 3 in the sourced-research pipeline. Fetch a URL returned by find_evidence_sources and extract a focused excerpt (up to max_chars characters of body text). Call this once per URL you intend to cite. The returned excerpt — not your memory — MUST be the basis for every claim in the final answer. Do not call this tool on URLs not provided by find_evidence_sources.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "URL to fetch. Must be a URL returned by find_evidence_sources."
+            },
+            "max_chars": {
+              "type": "integer",
+              "description": "Maximum body text characters to return (default: 6000).",
+              "default": 6000
+            }
+          },
+          "required": ["url"]
+        }
+      },
+      "script": "extract_evidence_excerpt.py",
+      "record_event": true
+    },
+    {
+      "name": "format_answer_with_citations",
+      "description": "STEP 3 of 3 in the sourced-research pipeline. Compose the final answer and attach the supporting citations. Each citation entry MUST contain a non-empty url and a non-empty excerpt drawn directly from extract_evidence_excerpt output — not paraphrased or invented. Call this tool only after you have called extract_evidence_excerpt for every URL you plan to cite. The tool validates that citations are non-empty and returns a formatted Markdown answer with a Sources section. IMPORTANT: pass 'citations' as a native JSON array of objects, NOT as a serialized string. Correct: citations=[{\"url\":\"...\",\"excerpt\":\"...\"}]. Wrong: citations=\"[{\\\"url\\\":\\\"...\\\"}]\".",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "answer": {
+              "type": "string",
+              "description": "The answer text to present to the user. Every factual claim should be supported by at least one citation in the citations list."
+            },
+            "citations": {
+              "type": "array",
+              "description": "List of citation objects, one per source used. Pass as a native array — do NOT stringify it.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "description": "Source URL (must be non-empty)."
+                  },
+                  "excerpt": {
+                    "type": "string",
+                    "description": "Verbatim or near-verbatim excerpt from the source that supports the claim (must be non-empty)."
+                  },
+                  "title": {
+                    "type": "string",
+                    "description": "Optional page title for display."
+                  }
+                },
+                "required": ["url", "excerpt"]
+              }
+            }
+          },
+          "required": ["answer", "citations"]
+        }
+      },
+      "script": "format_answer_with_citations.py",
+      "record_event": true
+    }
+  ]
+}
