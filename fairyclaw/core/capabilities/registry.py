@@ -28,23 +28,86 @@ logger = logging.getLogger(__name__)
 class CapabilityRegistry:
     """Load capability manifests, executors, and tool schemas."""
 
-    def __init__(self, capabilities_dir: str):
-        """Initialize registry and eagerly load capability metadata/executors.
+    def _load_tool_executor(self, tool_name: str, script_path: Path):
+        """Dynamically load execute() function from tool script.
 
         Args:
-            capabilities_dir (str): Root directory containing capability group folders.
+            tool_name (str): Tool name defined in manifest.
+            script_path (Path): Resolved script path.
 
         Returns:
             None
+
+        Raises:
+            Module loading errors are caught and logged.
         """
-        self.capabilities_dir = Path(capabilities_dir)
-        self.groups: Dict[str, CapabilityGroup] = {}
-        self.tools: Dict[str, ToolCapability] = {}
-        self.event_types: Dict[str, EventTypeDefinition] = {}
-        self.hooks: Dict[str, list[HookDefinition]] = {}
-        self.tool_executors: Dict[str, Callable[[Dict[str, Any], ToolContext], Any]] = {}
-        self.hook_executors: Dict[str, Callable[[HookStageInput[object]], Awaitable[HookStageOutput[object] | None]]] = {}
-        self._load_capabilities()
+        if not script_path.exists():
+            logger.error(f"Script not found for tool {tool_name}: {script_path}")
+            return
+
+        try:
+            module_name = f"capabilities.tools.{tool_name}"
+            spec = importlib.util.spec_from_file_location(module_name, script_path)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                spec.loader.exec_module(module)
+                
+                if hasattr(module, "execute"):
+                    self.tool_executors[tool_name] = module.execute
+                else:
+                    logger.error(f"Script for tool {tool_name} does not have an 'execute' function.")
+        except Exception as e:
+            logger.error(f"Error loading script for tool {tool_name}: {e}")
+
+    def _find_event_hook_handler_class(self, module: object) -> type[EventHookHandler] | None:
+        """Find first EventHookHandler subclass defined in a module."""
+        for _, candidate in inspect.getmembers(module, inspect.isclass):
+            if not issubclass(candidate, EventHookHandler) or candidate is EventHookHandler:
+                continue
+            if candidate.__module__ != getattr(module, "__name__", ""):
+                continue
+            return candidate
+        return None
+
+    def _load_hook_executor(self, hook_def: HookDefinition, script_path: Path) -> None:
+        """Dynamically load execute_hook() or execute() from hook script."""
+        hook_name = hook_def.name
+        if not script_path.exists():
+            logger.error(f"Script not found for hook {hook_name}: {script_path}")
+            return
+        try:
+            module_name = f"capabilities.hooks.{hook_name}"
+            spec = importlib.util.spec_from_file_location(module_name, script_path)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                spec.loader.exec_module(module)
+                handler_cls = self._find_event_hook_handler_class(module)
+                if handler_cls is not None:
+                    expected_event_type = hook_def.stage.removeprefix("event:")
+                    handler = handler_cls()
+                    raw_event_type = getattr(handler, "event_type", "")
+                    event_type_value = getattr(raw_event_type, "value", raw_event_type)
+                    if str(event_type_value) != expected_event_type:
+                        logger.error(
+                            "Event hook %s has mismatched event_type=%s, expected=%s",
+                            hook_name,
+                            event_type_value,
+                            expected_event_type,
+                        )
+                        return
+                    self.hook_executors[hook_name] = lambda hook_input, _h=handler: _h.run(
+                        hook_input.payload, hook_input.context
+                    )
+                elif hasattr(module, "execute_hook"):
+                    self.hook_executors[hook_name] = module.execute_hook
+                elif hasattr(module, "execute"):
+                    self.hook_executors[hook_name] = module.execute
+                else:
+                    logger.error(f"Script for hook {hook_name} lacks execute_hook/execute.")
+        except Exception as e:
+            logger.error(f"Error loading script for hook {hook_name}: {e}")
 
     def _load_capabilities(self):
         """Scan capability directories and register tools/skills.
@@ -88,86 +151,23 @@ class CapabilityRegistry:
                     except Exception as e:
                         logger.error(f"Error loading capabilities from {group_dir}: {e}")
 
-    def _load_tool_executor(self, tool_name: str, script_path: Path):
-        """Dynamically load execute() function from tool script.
+    def __init__(self, capabilities_dir: str):
+        """Initialize registry and eagerly load capability metadata/executors.
 
         Args:
-            tool_name (str): Tool name defined in manifest.
-            script_path (Path): Resolved script path.
+            capabilities_dir (str): Root directory containing capability group folders.
 
         Returns:
             None
-
-        Raises:
-            Module loading errors are caught and logged.
         """
-        if not script_path.exists():
-            logger.error(f"Script not found for tool {tool_name}: {script_path}")
-            return
-
-        try:
-            module_name = f"capabilities.tools.{tool_name}"
-            spec = importlib.util.spec_from_file_location(module_name, script_path)
-            if spec and spec.loader:
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[module_name] = module
-                spec.loader.exec_module(module)
-                
-                if hasattr(module, "execute"):
-                    self.tool_executors[tool_name] = module.execute
-                else:
-                    logger.error(f"Script for tool {tool_name} does not have an 'execute' function.")
-        except Exception as e:
-            logger.error(f"Error loading script for tool {tool_name}: {e}")
-
-    def _load_hook_executor(self, hook_def: HookDefinition, script_path: Path) -> None:
-        """Dynamically load execute_hook() or execute() from hook script."""
-        hook_name = hook_def.name
-        if not script_path.exists():
-            logger.error(f"Script not found for hook {hook_name}: {script_path}")
-            return
-        try:
-            module_name = f"capabilities.hooks.{hook_name}"
-            spec = importlib.util.spec_from_file_location(module_name, script_path)
-            if spec and spec.loader:
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[module_name] = module
-                spec.loader.exec_module(module)
-                handler_cls = self._find_event_hook_handler_class(module)
-                if handler_cls is not None:
-                    expected_event_type = hook_def.stage.removeprefix("event:")
-                    handler = handler_cls()
-                    raw_event_type = getattr(handler, "event_type", "")
-                    event_type_value = getattr(raw_event_type, "value", raw_event_type)
-                    if str(event_type_value) != expected_event_type:
-                        logger.error(
-                            "Event hook %s has mismatched event_type=%s, expected=%s",
-                            hook_name,
-                            event_type_value,
-                            expected_event_type,
-                        )
-                        return
-                    self.hook_executors[hook_name] = lambda hook_input, _h=handler: _h.run(
-                        hook_input.payload, hook_input.context
-                    )
-                elif hasattr(module, "execute_hook"):
-                    self.hook_executors[hook_name] = module.execute_hook
-                elif hasattr(module, "execute"):
-                    self.hook_executors[hook_name] = module.execute
-                else:
-                    logger.error(f"Script for hook {hook_name} lacks execute_hook/execute.")
-        except Exception as e:
-            logger.error(f"Error loading script for hook {hook_name}: {e}")
-
-    def _find_event_hook_handler_class(self, module: object) -> type[EventHookHandler] | None:
-        """Find first EventHookHandler subclass defined in a module."""
-        for _, candidate in inspect.getmembers(module, inspect.isclass):
-            if not issubclass(candidate, EventHookHandler) or candidate is EventHookHandler:
-                continue
-            if candidate.__module__ != getattr(module, "__name__", ""):
-                continue
-            return candidate
-        return None
+        self.capabilities_dir = Path(capabilities_dir)
+        self.groups: Dict[str, CapabilityGroup] = {}
+        self.tools: Dict[str, ToolCapability] = {}
+        self.event_types: Dict[str, EventTypeDefinition] = {}
+        self.hooks: Dict[str, list[HookDefinition]] = {}
+        self.tool_executors: Dict[str, Callable[[Dict[str, Any], ToolContext], Any]] = {}
+        self.hook_executors: Dict[str, Callable[[HookStageInput[object]], Awaitable[HookStageOutput[object] | None]]] = {}
+        self._load_capabilities()
 
     def get_tool_executor(self, tool_name: str) -> Optional[Callable[[Dict[str, Any], ToolContext], Any]]:
         """Get registered executor for a tool.
@@ -293,4 +293,3 @@ class CapabilityRegistry:
             })
 
         return tools_schema
-

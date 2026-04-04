@@ -34,6 +34,209 @@ DEFAULT_CONFIG = {
 }
 
 
+def _count_prompt_tokens(
+    counter: TokenCounter,
+    messages,
+    payload: BeforeLlmCallHookPayload,
+) -> int:
+    """Count tokens for messages plus tool schemas."""
+    return counter.count_messages(list(messages)) + counter.count_json([tool.to_openai_tool() for tool in payload.tools])
+
+
+def _rebuild_messages(
+    payload: BeforeLlmCallHookPayload,
+    history_items: list[ChatHistoryItem],
+    system_prompt: str,
+    extra_system_messages: list[LlmChatMessage],
+) -> list[LlmChatMessage]:
+    """Rebuild history while preserving earlier system-message injections."""
+    rebuilt_messages = MESSAGE_ASSEMBLER.assemble(
+        system_prompt=SystemPromptPart(text=system_prompt),
+        history_entries=history_items,
+        user_entry=payload.turn.user_turn,
+    )
+    if not extra_system_messages:
+        return rebuilt_messages
+    if rebuilt_messages and rebuilt_messages[0].role == "system":
+        return [rebuilt_messages[0], *extra_system_messages, *rebuilt_messages[1:]]
+    return [*extra_system_messages, *rebuilt_messages]
+
+
+def _build_output(
+    payload: BeforeLlmCallHookPayload,
+    history_items: list[ChatHistoryItem],
+    system_prompt: str,
+    extra_system_messages: list[LlmChatMessage],
+    *,
+    counter: TokenCounter,
+    original_tokens: int,
+    token_budget: int,
+) -> HookStageOutput[BeforeLlmCallHookPayload]:
+    """Rebuild provider-boundary messages from compressed history."""
+    rebuilt_messages = _rebuild_messages(payload, history_items, system_prompt, extra_system_messages)
+    new_tokens = _count_prompt_tokens(counter, rebuilt_messages, payload)
+    if new_tokens < original_tokens or len(history_items) != len(payload.turn.history_items):
+        logger.info(
+            "context_compression applied: session_id=%s history_items=%d->%d tokens=%d->%d budget=%d",
+            payload.turn.session_id,
+            len(payload.turn.history_items),
+            len(history_items),
+            original_tokens,
+            new_tokens,
+            token_budget,
+        )
+    patched_payload = replace(
+        payload,
+        turn=replace(
+            payload.turn,
+            history_items=history_items,
+            llm_messages=rebuilt_messages,
+        ),
+    )
+    return HookStageOutput(status=HookStatus.OK, patched_payload=patched_payload)
+
+
+def _load_config() -> dict[str, int]:
+    """Load hook-local config with defaults."""
+    raw = load_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
+    return {
+        "recency_window": int(raw.get("recency_window", DEFAULT_CONFIG["recency_window"])),
+        "tool_result_max_chars": int(raw.get("tool_result_max_chars", DEFAULT_CONFIG["tool_result_max_chars"])),
+        "assistant_message_max_chars": int(
+            raw.get("assistant_message_max_chars", DEFAULT_CONFIG["assistant_message_max_chars"])
+        ),
+    }
+
+
+def _extract_system_messages(payload: BeforeLlmCallHookPayload) -> tuple[str, list[LlmChatMessage]]:
+    """Read the primary system prompt plus any injected system context."""
+    if not payload.turn.llm_messages:
+        return "", []
+    messages = payload.turn.llm_messages
+    first_message = messages[0]
+    if first_message.role != "system":
+        return "", []
+    extra_messages: list[LlmChatMessage] = []
+    index = 1
+    while index < len(messages) and messages[index].role == "system":
+        extra_messages.append(messages[index])
+        index += 1
+    prompt_text = first_message.content if isinstance(first_message.content, str) else ""
+    return prompt_text, extra_messages
+
+
+def _first_user_message_exclusive_end(history_items: list[ChatHistoryItem]) -> int:
+    """Index past the first user SessionMessageBlock (delegated task is usually first). 0 if none."""
+    for idx, item in enumerate(history_items):
+        if isinstance(item, SessionMessageBlock) and item.role.value == "user":
+            return idx + 1
+    return 0
+
+
+def _latest_turn_suffix_length(history_items: list[ChatHistoryItem]) -> int:
+    """Length of trailing slice to keep intact: last assistant + its tool rounds, or one session block.
+
+    Matches how ``LlmMessageAssembler`` groups assistant ``tool_calls`` with following ``ToolCallRound``
+    rows so we never drop or truncate only part of that batch.
+    """
+    n = len(history_items)
+    if n == 0:
+        return 0
+    start = n - 1
+    while start >= 0 and isinstance(history_items[start], ToolCallRound):
+        start -= 1
+    if start >= 0 and isinstance(history_items[start], SessionMessageBlock):
+        return n - start
+    return n - start - 1
+
+
+def _truncate_text(text: str, max_chars: int) -> str:
+    """Clamp long text with an omission marker."""
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars].rstrip()}\n...[truncated]"
+
+
+def _truncate_assistant_message(item: SessionMessageBlock, max_chars: int) -> SessionMessageBlock:
+    """Clamp assistant text while preserving the message structure."""
+    plain_text = item.as_plain_text()
+    truncated_text = _truncate_text(plain_text, max_chars)
+    if truncated_text == plain_text:
+        return item
+    rebuilt = SessionMessageBlock.from_segments(item.role, (ContentSegment.text_segment(truncated_text),))
+    return rebuilt or item
+
+
+def _truncate_large_items(
+    history_items: Iterable[ChatHistoryItem],
+    tool_result_max_chars: int,
+    assistant_message_max_chars: int,
+    *,
+    sub_session_user_prefix_end: int = 0,
+) -> list[ChatHistoryItem]:
+    """Clamp oversized tool results and assistant messages."""
+    items = list(history_items)
+    if not items:
+        return []
+    protect = _latest_turn_suffix_length(items)
+    first_protected = len(items) - protect
+    head_keep = max(0, sub_session_user_prefix_end)
+    truncated: list[ChatHistoryItem] = []
+    for idx, item in enumerate(items):
+        preserve = idx >= first_protected or idx < head_keep
+        if preserve:
+            truncated.append(item)
+            continue
+        if isinstance(item, ToolCallRound):
+            truncated.append(
+                replace(
+                    item,
+                    tool_result=_truncate_text(item.tool_result, tool_result_max_chars),
+                    arguments_json=_truncate_text(item.arguments_json, tool_result_max_chars),
+                )
+            )
+            continue
+        if item.role.value == "assistant":
+            truncated.append(_truncate_assistant_message(item, assistant_message_max_chars))
+            continue
+        truncated.append(item)
+    return truncated
+
+
+def _keep_recent_history(
+    history_items: list[ChatHistoryItem],
+    recent_message_limit: int,
+) -> tuple[list[ChatHistoryItem], int]:
+    """Keep only a recent conversational window from the tail of history.
+
+    Returns:
+        (kept_items, tail_start_index) where original slice was history_items[tail_start_index:].
+    """
+    kept: deque[ChatHistoryItem] = deque()
+    seen_message_blocks = 0
+    for item in reversed(history_items):
+        kept.appendleft(item)
+        if isinstance(item, SessionMessageBlock):
+            seen_message_blocks += 1
+            if seen_message_blocks >= recent_message_limit:
+                break
+    kept_list = list(kept)
+    tail_start = len(history_items) - len(kept_list)
+    return kept_list, tail_start
+
+
+def _count_rebuilt_prompt(
+    counter: TokenCounter,
+    payload: BeforeLlmCallHookPayload,
+    history_items: list[ChatHistoryItem],
+    system_prompt: str,
+    extra_system_messages: list[LlmChatMessage],
+) -> int:
+    """Count prompt tokens after rebuilding compressed history."""
+    rebuilt_messages = _rebuild_messages(payload, history_items, system_prompt, extra_system_messages)
+    return _count_prompt_tokens(counter, rebuilt_messages, payload)
+
+
 async def execute_hook(
     hook_input: HookStageInput[BeforeLlmCallHookPayload],
 ) -> HookStageOutput[BeforeLlmCallHookPayload]:
@@ -132,207 +335,3 @@ async def execute_hook(
         original_tokens=original_tokens,
         token_budget=token_budget,
     )
-
-
-def _build_output(
-    payload: BeforeLlmCallHookPayload,
-    history_items: list[ChatHistoryItem],
-    system_prompt: str,
-    extra_system_messages: list[LlmChatMessage],
-    *,
-    counter: TokenCounter,
-    original_tokens: int,
-    token_budget: int,
-) -> HookStageOutput[BeforeLlmCallHookPayload]:
-    """Rebuild provider-boundary messages from compressed history."""
-    rebuilt_messages = _rebuild_messages(payload, history_items, system_prompt, extra_system_messages)
-    new_tokens = _count_prompt_tokens(counter, rebuilt_messages, payload)
-    if new_tokens < original_tokens or len(history_items) != len(payload.turn.history_items):
-        logger.info(
-            "context_compression applied: session_id=%s history_items=%d->%d tokens=%d->%d budget=%d",
-            payload.turn.session_id,
-            len(payload.turn.history_items),
-            len(history_items),
-            original_tokens,
-            new_tokens,
-            token_budget,
-        )
-    patched_payload = replace(
-        payload,
-        turn=replace(
-            payload.turn,
-            history_items=history_items,
-            llm_messages=rebuilt_messages,
-        ),
-    )
-    return HookStageOutput(status=HookStatus.OK, patched_payload=patched_payload)
-
-
-def _load_config() -> dict[str, int]:
-    """Load hook-local config with defaults."""
-    raw = load_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
-    return {
-        "recency_window": int(raw.get("recency_window", DEFAULT_CONFIG["recency_window"])),
-        "tool_result_max_chars": int(raw.get("tool_result_max_chars", DEFAULT_CONFIG["tool_result_max_chars"])),
-        "assistant_message_max_chars": int(
-            raw.get("assistant_message_max_chars", DEFAULT_CONFIG["assistant_message_max_chars"])
-        ),
-    }
-
-
-def _extract_system_messages(payload: BeforeLlmCallHookPayload) -> tuple[str, list[LlmChatMessage]]:
-    """Read the primary system prompt plus any injected system context."""
-    if not payload.turn.llm_messages:
-        return "", []
-    messages = payload.turn.llm_messages
-    first_message = messages[0]
-    if first_message.role != "system":
-        return "", []
-    extra_messages: list[LlmChatMessage] = []
-    index = 1
-    while index < len(messages) and messages[index].role == "system":
-        extra_messages.append(messages[index])
-        index += 1
-    prompt_text = first_message.content if isinstance(first_message.content, str) else ""
-    return prompt_text, extra_messages
-
-
-def _first_user_message_exclusive_end(history_items: list[ChatHistoryItem]) -> int:
-    """Index past the first user SessionMessageBlock (delegated task is usually first). 0 if none."""
-    for idx, item in enumerate(history_items):
-        if isinstance(item, SessionMessageBlock) and item.role.value == "user":
-            return idx + 1
-    return 0
-
-
-def _latest_turn_suffix_length(history_items: list[ChatHistoryItem]) -> int:
-    """Length of trailing slice to keep intact: last assistant + its tool rounds, or one session block.
-
-    Matches how ``LlmMessageAssembler`` groups assistant ``tool_calls`` with following ``ToolCallRound``
-    rows so we never drop or truncate only part of that batch.
-    """
-    n = len(history_items)
-    if n == 0:
-        return 0
-    start = n - 1
-    while start >= 0 and isinstance(history_items[start], ToolCallRound):
-        start -= 1
-    if start >= 0 and isinstance(history_items[start], SessionMessageBlock):
-        return n - start
-    return n - start - 1
-
-
-def _truncate_large_items(
-    history_items: Iterable[ChatHistoryItem],
-    tool_result_max_chars: int,
-    assistant_message_max_chars: int,
-    *,
-    sub_session_user_prefix_end: int = 0,
-) -> list[ChatHistoryItem]:
-    """Clamp oversized tool results and assistant messages."""
-    items = list(history_items)
-    if not items:
-        return []
-    protect = _latest_turn_suffix_length(items)
-    first_protected = len(items) - protect
-    head_keep = max(0, sub_session_user_prefix_end)
-    truncated: list[ChatHistoryItem] = []
-    for idx, item in enumerate(items):
-        preserve = idx >= first_protected or idx < head_keep
-        if preserve:
-            truncated.append(item)
-            continue
-        if isinstance(item, ToolCallRound):
-            truncated.append(
-                replace(
-                    item,
-                    tool_result=_truncate_text(item.tool_result, tool_result_max_chars),
-                    arguments_json=_truncate_text(item.arguments_json, tool_result_max_chars),
-                )
-            )
-            continue
-        if item.role.value == "assistant":
-            truncated.append(_truncate_assistant_message(item, assistant_message_max_chars))
-            continue
-        truncated.append(item)
-    return truncated
-
-
-def _truncate_assistant_message(item: SessionMessageBlock, max_chars: int) -> SessionMessageBlock:
-    """Clamp assistant text while preserving the message structure."""
-    plain_text = item.as_plain_text()
-    truncated_text = _truncate_text(plain_text, max_chars)
-    if truncated_text == plain_text:
-        return item
-    rebuilt = SessionMessageBlock.from_segments(item.role, (ContentSegment.text_segment(truncated_text),))
-    return rebuilt or item
-
-
-def _keep_recent_history(
-    history_items: list[ChatHistoryItem],
-    recent_message_limit: int,
-) -> tuple[list[ChatHistoryItem], int]:
-    """Keep only a recent conversational window from the tail of history.
-
-    Returns:
-        (kept_items, tail_start_index) where original slice was history_items[tail_start_index:].
-    """
-    kept: deque[ChatHistoryItem] = deque()
-    seen_message_blocks = 0
-    for item in reversed(history_items):
-        kept.appendleft(item)
-        if isinstance(item, SessionMessageBlock):
-            seen_message_blocks += 1
-            if seen_message_blocks >= recent_message_limit:
-                break
-    kept_list = list(kept)
-    tail_start = len(history_items) - len(kept_list)
-    return kept_list, tail_start
-
-
-def _count_prompt_tokens(
-    counter: TokenCounter,
-    messages,
-    payload: BeforeLlmCallHookPayload,
-) -> int:
-    """Count tokens for messages plus tool schemas."""
-    return counter.count_messages(list(messages)) + counter.count_json([tool.to_openai_tool() for tool in payload.tools])
-
-
-def _count_rebuilt_prompt(
-    counter: TokenCounter,
-    payload: BeforeLlmCallHookPayload,
-    history_items: list[ChatHistoryItem],
-    system_prompt: str,
-    extra_system_messages: list[LlmChatMessage],
-) -> int:
-    """Count prompt tokens after rebuilding compressed history."""
-    rebuilt_messages = _rebuild_messages(payload, history_items, system_prompt, extra_system_messages)
-    return _count_prompt_tokens(counter, rebuilt_messages, payload)
-
-
-def _rebuild_messages(
-    payload: BeforeLlmCallHookPayload,
-    history_items: list[ChatHistoryItem],
-    system_prompt: str,
-    extra_system_messages: list[LlmChatMessage],
-) -> list[LlmChatMessage]:
-    """Rebuild history while preserving earlier system-message injections."""
-    rebuilt_messages = MESSAGE_ASSEMBLER.assemble(
-        system_prompt=SystemPromptPart(text=system_prompt),
-        history_entries=history_items,
-        user_entry=payload.turn.user_turn,
-    )
-    if not extra_system_messages:
-        return rebuilt_messages
-    if rebuilt_messages and rebuilt_messages[0].role == "system":
-        return [rebuilt_messages[0], *extra_system_messages, *rebuilt_messages[1:]]
-    return [*extra_system_messages, *rebuilt_messages]
-
-
-def _truncate_text(text: str, max_chars: int) -> str:
-    """Clamp long text with an omission marker."""
-    if max_chars <= 0 or len(text) <= max_chars:
-        return text
-    return f"{text[:max_chars].rstrip()}\n...[truncated]"
-

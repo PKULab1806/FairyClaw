@@ -51,14 +51,6 @@ class SentenceTransformerEmbedding(EmbeddingService):
     def __init__(self, model_name: str) -> None:
         self.model_name = model_name
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed texts and return dense vectors."""
-        if not texts:
-            return []
-        model = self._get_model()
-        vectors = model.encode(texts, normalize_embeddings=True)
-        return [vector.tolist() for vector in vectors]
-
     def _get_model(self):  # type: ignore[no-untyped-def]
         with self._CACHE_LOCK:
             cached_model = self._MODEL_CACHE.get(self.model_name)
@@ -76,6 +68,14 @@ class SentenceTransformerEmbedding(EmbeddingService):
             self._MODEL_CACHE[self.model_name] = model
         return model
 
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        """Embed texts and return dense vectors."""
+        if not texts:
+            return []
+        model = self._get_model()
+        vectors = model.encode(texts, normalize_embeddings=True)
+        return [vector.tolist() for vector in vectors]
+
 
 class HashingEmbedding(EmbeddingService):
     """Fully local hashing-based embedding for offline MVP usage."""
@@ -83,10 +83,6 @@ class HashingEmbedding(EmbeddingService):
     def __init__(self, model_name: str, dimensions: int = 384) -> None:
         self.model_name = model_name
         self.dimensions = max(32, dimensions)
-
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed texts into normalized hashed bag-of-token vectors."""
-        return [self._embed_one(text) for text in texts]
 
     def _embed_one(self, text: str) -> list[float]:
         vector = [0.0] * self.dimensions
@@ -102,6 +98,10 @@ class HashingEmbedding(EmbeddingService):
         if norm <= 0:
             return vector
         return [value / norm for value in vector]
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        """Embed texts into normalized hashed bag-of-token vectors."""
+        return [self._embed_one(text) for text in texts]
 
 
 class OpenAICompatibleEmbedding(EmbeddingService):

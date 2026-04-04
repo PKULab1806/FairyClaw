@@ -32,6 +32,33 @@ class ToolRouter:
         self.registry = registry
         self.llm_client = create_llm_client(profile_name=settings.router_profile_name)
 
+    def _build_prompt(self, user_input: str, profiles: List[dict]) -> str:
+        """Build routing prompt for lightweight selector model.
+
+        Args:
+            user_input (str): Delegation instruction text.
+            profiles (List[dict]): Candidate capability group profiles.
+
+        Returns:
+            str: Prompt text requiring JSON-array output.
+        """
+        prompt = (
+            "You are a system routing brain. The user's current goal is:\n"
+            f"\"{user_input}\"\n\n"
+            "We have the following capability groups available to call:\n"
+        )
+
+        for idx, p in enumerate(profiles, 1):
+            prompt += f"{idx}. {p['group_name']}: {p['description']}\n"
+
+        prompt += (
+            "\nBased on the user's goal, please select the capability groups that might need to be enabled for this task.\n"
+            "Please be restrained and only select truly relevant groups.\n"
+            "Output the result as a JSON array of strings containing the group names. For example: [\"CoreOperations\", \"DatabaseTools\"].\n"
+            "Do not output any other text besides the JSON array."
+        )
+        return prompt
+
     async def select_groups(self, user_input: str) -> Optional[List[str]]:
         """Select capability groups to enable for current delegated task.
 
@@ -86,30 +113,3 @@ class ToolRouter:
                 error_details += f" | Status: {e.response.status_code} | Response: {e.response.text}"
             logger.error(f"Router failed to select groups: {error_details}")
             return baseline_groups + [p["group_name"] for p in candidate_profiles]
-
-    def _build_prompt(self, user_input: str, profiles: List[dict]) -> str:
-        """Build routing prompt for lightweight selector model.
-
-        Args:
-            user_input (str): Delegation instruction text.
-            profiles (List[dict]): Candidate capability group profiles.
-
-        Returns:
-            str: Prompt text requiring JSON-array output.
-        """
-        prompt = (
-            "You are a system routing brain. The user's current goal is:\n"
-            f"\"{user_input}\"\n\n"
-            "We have the following capability groups available to call:\n"
-        )
-
-        for idx, p in enumerate(profiles, 1):
-            prompt += f"{idx}. {p['group_name']}: {p['description']}\n"
-
-        prompt += (
-            "\nBased on the user's goal, please select the capability groups that might need to be enabled for this task.\n"
-            "Please be restrained and only select truly relevant groups.\n"
-            "Output the result as a JSON array of strings containing the group names. For example: [\"CoreOperations\", \"DatabaseTools\"].\n"
-            "Do not output any other text besides the JSON array."
-        )
-        return prompt

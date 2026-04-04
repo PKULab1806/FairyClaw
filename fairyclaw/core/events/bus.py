@@ -412,56 +412,6 @@ class SessionEventBus:
                 self._scheduled_sessions.add(event.session_id)
                 await self._ready_sessions.put(event.session_id)
 
-    async def start(self) -> None:
-        """Start worker tasks for event dispatch loop.
-
-        Returns:
-            None
-        """
-        if self._running:
-            return
-        self._running = True
-        for index in range(self.worker_count):
-            task = asyncio.create_task(self._worker_loop(index))
-            self._workers.append(task)
-
-    async def stop(self) -> None:
-        """Stop dispatch loop and reclaim worker tasks.
-
-        Returns:
-            None
-        """
-        self._running = False
-        for task in self._workers:
-            task.cancel()
-        if self._workers:
-            await asyncio.gather(*self._workers, return_exceptions=True)
-        self._workers = []
-
-    async def _worker_loop(self, worker_index: int) -> None:
-        """Run one worker dispatch loop.
-
-        Args:
-            worker_index (int): Worker index for logging.
-
-        Returns:
-            None
-        """
-        while self._running:
-            try:
-                session_id = await self._ready_sessions.get()
-                event = await self._pop_next_event(session_id)
-                if event is None:
-                    self._ready_sessions.task_done()
-                    continue
-                await self._dispatch(event, worker_index)
-                await self._reschedule_session(session_id)
-                self._ready_sessions.task_done()
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                logger.error(f"Event bus worker {worker_index} failed: {exc}", exc_info=True)
-
     async def _pop_next_event(self, session_id: str) -> RuntimeEvent | None:
         """Pop next queued event for given session.
 
@@ -521,3 +471,53 @@ class SessionEventBus:
                     f"Event handler failed for type={event.type_value} session={event.session_id} worker={worker_index}: {result}",
                     exc_info=True,
                 )
+
+    async def _worker_loop(self, worker_index: int) -> None:
+        """Run one worker dispatch loop.
+
+        Args:
+            worker_index (int): Worker index for logging.
+
+        Returns:
+            None
+        """
+        while self._running:
+            try:
+                session_id = await self._ready_sessions.get()
+                event = await self._pop_next_event(session_id)
+                if event is None:
+                    self._ready_sessions.task_done()
+                    continue
+                await self._dispatch(event, worker_index)
+                await self._reschedule_session(session_id)
+                self._ready_sessions.task_done()
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.error(f"Event bus worker {worker_index} failed: {exc}", exc_info=True)
+
+    async def start(self) -> None:
+        """Start worker tasks for event dispatch loop.
+
+        Returns:
+            None
+        """
+        if self._running:
+            return
+        self._running = True
+        for index in range(self.worker_count):
+            task = asyncio.create_task(self._worker_loop(index))
+            self._workers.append(task)
+
+    async def stop(self) -> None:
+        """Stop dispatch loop and reclaim worker tasks.
+
+        Returns:
+            None
+        """
+        self._running = False
+        for task in self._workers:
+            task.cancel()
+        if self._workers:
+            await asyncio.gather(*self._workers, return_exceptions=True)
+        self._workers = []

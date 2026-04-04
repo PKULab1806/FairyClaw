@@ -50,4 +50,3 @@ class GatewaySessionRouteStore:
             if model is None:
                 return None
             return model.session_id
-

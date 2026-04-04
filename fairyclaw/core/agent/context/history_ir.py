@@ -149,24 +149,6 @@ class ToolCallRound:
     arguments_json: str
     tool_result: str
 
-    @classmethod
-    def from_persisted(
-        cls,
-        event_id: str,
-        tool_name: str,
-        tool_args: object,
-        tool_result: object,
-    ) -> "ToolCallRound":
-        """Build one tool round from persisted operation-event fields."""
-        call_id = cls._extract_tool_call_id(event_id, tool_args)
-        arguments_json = cls._extract_arguments_json(tool_args)
-        return cls(
-            tool_name=tool_name,
-            call_id=call_id,
-            arguments_json=arguments_json,
-            tool_result="" if tool_result is None else str(tool_result),
-        )
-
     @staticmethod
     def _extract_tool_call_id(event_id: str, tool_args: object) -> str:
         if isinstance(tool_args, dict):
@@ -186,6 +168,24 @@ class ToolCallRound:
         if isinstance(tool_args, str) and tool_args.strip():
             return tool_args
         return "{}"
+
+    @classmethod
+    def from_persisted(
+        cls,
+        event_id: str,
+        tool_name: str,
+        tool_args: object,
+        tool_result: object,
+    ) -> "ToolCallRound":
+        """Build one tool round from persisted operation-event fields."""
+        call_id = cls._extract_tool_call_id(event_id, tool_args)
+        arguments_json = cls._extract_arguments_json(tool_args)
+        return cls(
+            tool_name=tool_name,
+            call_id=call_id,
+            arguments_json=arguments_json,
+            tool_result="" if tool_result is None else str(tool_result),
+        )
 
 
 @dataclass(frozen=True)

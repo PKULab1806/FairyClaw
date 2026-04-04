@@ -19,6 +19,11 @@ HookExecutor = Callable[[HookStageInput[PayloadT]], Awaitable[HookStageOutput[Pa
 class HookRuntime:
     """Run hook executors with timeout and error policy."""
 
+    def _normalize_output(self, raw: HookStageOutput[PayloadT] | None) -> HookStageOutput[PayloadT]:
+        if raw is None:
+            return HookStageOutput(status=HookStatus.SKIP)
+        return raw
+
     async def run_stage(
         self,
         hook_input: HookStageInput[PayloadT],
@@ -76,8 +81,3 @@ class HookRuntime:
             metrics=metrics,
             error=None,
         )
-
-    def _normalize_output(self, raw: HookStageOutput[PayloadT] | None) -> HookStageOutput[PayloadT]:
-        if raw is None:
-            return HookStageOutput(status=HookStatus.SKIP)
-        return raw

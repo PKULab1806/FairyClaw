@@ -18,11 +18,56 @@ logger = logging.getLogger(__name__)
 class LocalVectorStore:
     """Minimal local Qdrant wrapper for memory retrieval."""
 
+    @staticmethod
+    def _resolve_storage_path(storage_path: str) -> Path:
+        path = Path(storage_path)
+        if path.is_absolute():
+            return path
+        project_root = Path(settings.data_dir).resolve().parent
+        return (project_root / path).resolve()
+
     def __init__(self, storage_path: str, collection_name: str) -> None:
         self.storage_path = self._resolve_storage_path(storage_path)
         self.collection_name = collection_name
         self._client = None
         self._models = None
+
+    def _ensure_collection(self, client, models, vector_size: int) -> None:  # type: ignore[no-untyped-def]
+        try:
+            client.get_collection(self.collection_name)
+            return
+        except Exception:
+            pass
+        client.create_collection(
+            collection_name=self.collection_name,
+            vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.COSINE),
+        )
+
+    def _get_client_and_models(self):  # type: ignore[no-untyped-def]
+        if self._client is not None and self._models is not None:
+            return self._client, self._models
+        try:
+            from qdrant_client import QdrantClient, models
+        except Exception as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError(
+                "qdrant-client is required for RAG retrieval. Install the optional dependency first."
+            ) from exc
+        self.storage_path.mkdir(parents=True, exist_ok=True)
+        self._client = QdrantClient(path=str(self.storage_path))
+        self._models = models
+        return self._client, self._models
+
+    @staticmethod
+    def _normalize_point_id(point_id: object) -> str:
+        """Convert arbitrary business IDs into stable UUID strings."""
+        return str(uuid5(NAMESPACE_URL, str(point_id)))
+
+    @staticmethod
+    def _build_payload(point: dict[str, Any]) -> dict[str, Any]:
+        """Preserve the original business identifier inside payload."""
+        payload = dict(point.get("payload", {}) or {})
+        payload.setdefault("point_id", str(point.get("id", "")))
+        return payload
 
     def upsert(self, points: list[dict[str, Any]], vector_size: int) -> None:
         """Insert or update vector points."""
@@ -41,6 +86,33 @@ class LocalVectorStore:
                 for point in points
             ],
         )
+
+    @staticmethod
+    def _rerank_score(query_text: str, payload: dict[str, Any], vector_score: float) -> float:
+        """Apply lightweight lexical reranking on top of vector similarity."""
+        text = str(payload.get("text", "")).lower()
+        category = str(payload.get("category", "")).lower()
+        query = query_text.lower()
+        score = float(vector_score)
+        if category == "fact":
+            score += 0.05
+        if "secret" in query and "secret" in text:
+            score += 0.10
+        if "marker" in query and "marker" in text:
+            score += 0.10
+        if "path" in query and "/" in text:
+            score += 0.08
+        if ("url" in query or "docs" in query) and "http" in text:
+            score += 0.08
+        if "remember" in query and "remember" in text:
+            score += 0.04
+        overlap = LocalVectorStore._token_overlap(query, text)
+        score += overlap * 0.08
+        if "lorem ipsum" in text or "noise round" in text:
+            score -= 0.25
+        if "i don't have" in text or "no such information" in text:
+            score -= 0.20
+        return score
 
     def search(
         self,
@@ -110,70 +182,6 @@ class LocalVectorStore:
         results.sort(key=lambda item: float(item.get("rerank_score", 0.0)), reverse=True)
         return results[:limit]
 
-    def _ensure_collection(self, client, models, vector_size: int) -> None:  # type: ignore[no-untyped-def]
-        try:
-            client.get_collection(self.collection_name)
-            return
-        except Exception:
-            pass
-        client.create_collection(
-            collection_name=self.collection_name,
-            vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.COSINE),
-        )
-
-    def _get_client_and_models(self):  # type: ignore[no-untyped-def]
-        if self._client is not None and self._models is not None:
-            return self._client, self._models
-        try:
-            from qdrant_client import QdrantClient, models
-        except Exception as exc:  # pragma: no cover - optional dependency
-            raise RuntimeError(
-                "qdrant-client is required for RAG retrieval. Install the optional dependency first."
-            ) from exc
-        self.storage_path.mkdir(parents=True, exist_ok=True)
-        self._client = QdrantClient(path=str(self.storage_path))
-        self._models = models
-        return self._client, self._models
-
-    @staticmethod
-    def _normalize_point_id(point_id: object) -> str:
-        """Convert arbitrary business IDs into stable UUID strings."""
-        return str(uuid5(NAMESPACE_URL, str(point_id)))
-
-    @staticmethod
-    def _build_payload(point: dict[str, Any]) -> dict[str, Any]:
-        """Preserve the original business identifier inside payload."""
-        payload = dict(point.get("payload", {}) or {})
-        payload.setdefault("point_id", str(point.get("id", "")))
-        return payload
-
-    @staticmethod
-    def _rerank_score(query_text: str, payload: dict[str, Any], vector_score: float) -> float:
-        """Apply lightweight lexical reranking on top of vector similarity."""
-        text = str(payload.get("text", "")).lower()
-        category = str(payload.get("category", "")).lower()
-        query = query_text.lower()
-        score = float(vector_score)
-        if category == "fact":
-            score += 0.05
-        if "secret" in query and "secret" in text:
-            score += 0.10
-        if "marker" in query and "marker" in text:
-            score += 0.10
-        if "path" in query and "/" in text:
-            score += 0.08
-        if ("url" in query or "docs" in query) and "http" in text:
-            score += 0.08
-        if "remember" in query and "remember" in text:
-            score += 0.04
-        overlap = LocalVectorStore._token_overlap(query, text)
-        score += overlap * 0.08
-        if "lorem ipsum" in text or "noise round" in text:
-            score -= 0.25
-        if "i don't have" in text or "no such information" in text:
-            score -= 0.20
-        return score
-
     @staticmethod
     def _token_overlap(query: str, text: str) -> int:
         """Count overlapping informative tokens."""
@@ -182,11 +190,3 @@ class LocalVectorStore:
         text_tokens = set(token_pattern.findall(text))
         stopwords = {"what", "should", "reply", "only", "with", "this", "that", "later", "have", "your", "remember"}
         return len((query_tokens - stopwords) & (text_tokens - stopwords))
-
-    @staticmethod
-    def _resolve_storage_path(storage_path: str) -> Path:
-        path = Path(storage_path)
-        if path.is_absolute():
-            return path
-        project_root = Path(settings.data_dir).resolve().parent
-        return (project_root / path).resolve()

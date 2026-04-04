@@ -83,10 +83,6 @@ class Planner(BasePlanner):
     persists operation traces, and publishes follow-up runtime events for subsequent steps.
     """
 
-    def _next_turn_id(self) -> str:
-        """Generate unique turn identifier for hook context."""
-        return f"turn_{uuid.uuid4().hex[:8]}"
-
     def __init__(self) -> None:
         """Initialize planner dependencies.
 
@@ -102,52 +98,84 @@ class Planner(BasePlanner):
             SessionKind.SUB: SubSessionTurnPolicy(),
         }
 
-    async def process_turn(self, request: TurnRequest) -> None:
-        """Execute one planner advancement cycle from typed turn request."""
-        await self._process_turn_request(request)
+    def _next_turn_id(self) -> str:
+        """Generate unique turn identifier for hook context."""
+        return f"turn_{uuid.uuid4().hex[:8]}"
 
-    async def _process_turn_request(self, request: TurnRequest) -> None:
-        """Execute one planner advancement cycle from typed turn request."""
-        async with get_session_lock(request.session_id):
-            await self._run_turn_with_policy(request, self._resolve_policy(request))
+    def _resolve_session_kind_from_id(self, session_id: str) -> SessionKind:
+        """Resolve session kind from session identifier shape."""
+        return SessionKind.SUB if SUB_SESSION_MARKER in session_id else SessionKind.MAIN
+
+    def _resolve_session_kind(self, request: TurnRequest) -> SessionKind:
+        """Resolve session kind once per request."""
+        if request.session_kind is not None:
+            return request.session_kind
+        return self._resolve_session_kind_from_id(request.session_id)
 
     def _resolve_policy(self, request: TurnRequest) -> TurnExecutionPolicy:
         """Resolve execution policy for one turn request."""
         return self.execution_policies[self._resolve_session_kind(request)]
 
-    async def _run_turn_with_policy(self, request: TurnRequest, policy: TurnExecutionPolicy) -> None:
-        """Run one turn using the session-kind-specific execution policy."""
-        if await policy.should_skip(self, request):
-            return
-        try:
-            turn_result = await self._prepare_turn(
-                request=request,
-                is_sub_session=policy.kind is SessionKind.SUB,
-            )
-            if turn_result.force_finish is not None:
-                return
-            if not turn_result.tool_calls:
-                await policy.handle_text_response(self, request, turn_result.message_text)
-                return
-            tool_result = await self._process_tool_calls(
-                request.session_id,
-                turn_result.tool_calls,
-                turn_result.message_text,
-                request.memory,
-                hook_context=turn_result.hook_context,
-                enabled_groups=turn_result.resolved_groups,
-            )
-            if tool_result.force_finish is not None:
-                return
-            await policy.handle_tool_follow_up(
-                self,
-                request,
-                turn_result.task_type,
-                turn_result.resolved_groups,
-                tool_result.called_tools,
-            )
-        except Exception as exc:
-            await policy.handle_failure(self, request, exc)
+    def _resolve_tools_for_session(self, session_id: str, selected_groups: list[str] | None = None) -> list[str]:
+        """Resolve visible capability groups with main/sub-session constraints.
+
+        Args:
+            session_id (str): Current session identifier.
+            selected_groups (list[str] | None): Routed group list from delegation payload.
+
+        Returns:
+            list[str]: Effective capability group names visible in this turn.
+        """
+        is_sub_session = self._resolve_session_kind_from_id(session_id) is SessionKind.SUB
+        if not is_sub_session:
+            return self.capability_resolver.resolve(None, is_sub_session=False)
+        return self.capability_resolver.resolve(selected_groups, is_sub_session=True)
+
+    def _build_tool_specs(self, enabled_groups: list[str]) -> list[LlmFunctionToolSpec]:
+        """Build typed function tool specs from capability registry."""
+        openai_tools = self.registry.get_openai_tools(group_names=enabled_groups)
+        specs: list[LlmFunctionToolSpec] = []
+        for tool in openai_tools:
+            spec = LlmFunctionToolSpec.from_openai_tool(tool)
+            if spec is not None:
+                specs.append(spec)
+        return specs
+
+    def _extract_force_finish_directive(
+        self,
+        stage: str,
+        force_finish: bool,
+        reason: str | None,
+        details: JsonObject | None = None,
+    ) -> ForceFinishDirective | None:
+        """Build a typed short-circuit directive from hook payload fields."""
+        if not force_finish:
+            return None
+        return ForceFinishDirective(stage=stage, reason=reason, details=dict(details or {}))
+
+    async def _publish_force_finish_event(
+        self,
+        session_id: str,
+        hook_context: HookExecutionContext,
+        enabled_groups: list[str],
+        directive: ForceFinishDirective,
+    ) -> None:
+        """Publish one non-triggering runtime event for hook-requested short-circuit."""
+        await publish_runtime_event(
+            event_type=EventType.FORCE_FINISH_REQUESTED,
+            session_id=session_id,
+            payload={
+                "trigger_turn": False,
+                "reason": directive.reason,
+                "stage": directive.stage,
+                "turn_id": hook_context.turn_id,
+                "task_type": hook_context.task_type,
+                "enabled_groups": list(enabled_groups),
+                "is_sub_session": hook_context.is_sub_session,
+                "details": directive.details,
+            },
+            source="planner_force_finish",
+        )
 
     async def _prepare_turn(
         self,
@@ -283,177 +311,14 @@ class Planner(BasePlanner):
             force_finish=after_llm_directive,
         )
 
-    async def _run_main_session_turn(self, request: TurnRequest) -> None:
-        """Run one turn for a main session."""
-        await self._run_turn_with_policy(request, self.execution_policies[SessionKind.MAIN])
-
-    async def _run_sub_session_turn(self, request: TurnRequest) -> None:
-        """Run one turn for a sub-session."""
-        await self._run_turn_with_policy(request, self.execution_policies[SessionKind.SUB])
-
-    def _resolve_tools_for_session(self, session_id: str, selected_groups: list[str] | None = None) -> list[str]:
-        """Resolve visible capability groups with main/sub-session constraints.
-
-        Args:
-            session_id (str): Current session identifier.
-            selected_groups (list[str] | None): Routed group list from delegation payload.
-
-        Returns:
-            list[str]: Effective capability group names visible in this turn.
-        """
-        is_sub_session = self._resolve_session_kind_from_id(session_id) is SessionKind.SUB
-        if not is_sub_session:
-            return self.capability_resolver.resolve(None, is_sub_session=False)
-        return self.capability_resolver.resolve(selected_groups, is_sub_session=True)
-
-    def _build_tool_specs(self, enabled_groups: list[str]) -> list[LlmFunctionToolSpec]:
-        """Build typed function tool specs from capability registry."""
-        openai_tools = self.registry.get_openai_tools(group_names=enabled_groups)
-        specs: list[LlmFunctionToolSpec] = []
-        for tool in openai_tools:
-            spec = LlmFunctionToolSpec.from_openai_tool(tool)
-            if spec is not None:
-                specs.append(spec)
-        return specs
-
-    def _resolve_session_kind_from_id(self, session_id: str) -> SessionKind:
-        """Resolve session kind from session identifier shape."""
-        return SessionKind.SUB if SUB_SESSION_MARKER in session_id else SessionKind.MAIN
-
-    def _resolve_session_kind(self, request: TurnRequest) -> SessionKind:
-        """Resolve session kind once per request."""
-        if request.session_kind is not None:
-            return request.session_kind
-        return self._resolve_session_kind_from_id(request.session_id)
-
-    def _should_publish_follow_up(self, called_tools: list[str]) -> bool:
-        """Determine whether planner should enqueue internal follow-up.
-
-        Args:
-            called_tools (list[str]): Tool names executed in current turn.
-
-        Returns:
-            bool: True when at least one tool call executed.
-        """
-        return len(called_tools) > 0
-
-    async def _publish_follow_up_event(self, session_id: str, task_type: str, enabled_groups: list[str]) -> None:
-        """Publish one internal follow-up wakeup event."""
-        await publish_runtime_event(
-            event_type=EventType.USER_MESSAGE_RECEIVED,
-            session_id=session_id,
-            payload={
-                "internal_followup": True,
-                "trigger_turn": True,
-                "task_type": task_type,
-                "enabled_groups": enabled_groups,
-            },
-            source="planner_followup",
-        )
-
-    def _extract_force_finish_directive(
-        self,
-        stage: str,
-        force_finish: bool,
-        reason: str | None,
-        details: JsonObject | None = None,
-    ) -> ForceFinishDirective | None:
-        """Build a typed short-circuit directive from hook payload fields."""
-        if not force_finish:
+    def _normalize_assistant_tool_message(self, message_text: str | None) -> str | None:
+        """Normalize assistant text that accompanies tool calls."""
+        if not message_text:
             return None
-        return ForceFinishDirective(stage=stage, reason=reason, details=dict(details or {}))
-
-    async def _publish_force_finish_event(
-        self,
-        session_id: str,
-        hook_context: HookExecutionContext,
-        enabled_groups: list[str],
-        directive: ForceFinishDirective,
-    ) -> None:
-        """Publish one non-triggering runtime event for hook-requested short-circuit."""
-        await publish_runtime_event(
-            event_type=EventType.FORCE_FINISH_REQUESTED,
-            session_id=session_id,
-            payload={
-                "trigger_turn": False,
-                "reason": directive.reason,
-                "stage": directive.stage,
-                "turn_id": hook_context.turn_id,
-                "task_type": hook_context.task_type,
-                "enabled_groups": list(enabled_groups),
-                "is_sub_session": hook_context.is_sub_session,
-                "details": directive.details,
-            },
-            source="planner_force_finish",
-        )
-
-    def _is_sub_session_terminal(self, sub_session_id: str) -> bool:
-        """Check whether a sub-session is already terminal in main-session state."""
-        return self.subtasks.is_sub_session_terminal(sub_session_id)
-
-    async def _mark_subtask_if_non_terminal(self, sub_session_id: str, status: str, summary: str) -> None:
-        """Mark subtask terminal only when it is not already terminal.
-
-        Args:
-            sub_session_id (str): Sub-session identifier.
-            status (str): Target terminal status.
-            summary (str): Terminal summary text.
-
-        Returns:
-            None
-        """
-        await self.subtasks.mark_subtask_if_non_terminal(sub_session_id, status, summary)
-
-    def _lookup_subtask_status(self, sub_session_id: str) -> str | None:
-        return self.subtasks.lookup_subtask_status(sub_session_id)
-
-    async def _publish_subtask_barrier_if_ready(self, sub_session_id: str) -> None:
-        """Publish aggregated barrier message when all subtasks are terminal.
-
-        Args:
-            sub_session_id (str): Any sub-session in the target main-session batch.
-
-        Returns:
-            None
-
-        Raises:
-            Exceptions during persistence or event publication are caught and logged.
-        """
-        await self.subtasks.publish_subtask_barrier_if_ready(sub_session_id)
-
-    async def _try_publish_subtask_barrier(self, sub_session_id: str) -> None:
-        """Compatibility wrapper for legacy subtask barrier helper name."""
-        await self._publish_subtask_barrier_if_ready(sub_session_id)
-
-    async def _notify_main_session_subtask_failure(self, sub_session_id: str, summary: str, status: str = "failed") -> None:
-        await self.subtasks.notify_main_session_subtask_failure(sub_session_id, summary, status=status)
-
-    async def _handle_text_fallback(
-        self,
-        session_id: str,
-        content: str,
-        memory: MemoryProvider | None,
-    ) -> None:
-        """Handle direct-text model output path.
-
-        Args:
-            session_id (str): Session identifier.
-            content (str): Model-generated text.
-            memory (PersistentMemory | None): Memory adapter for session persistence.
-
-        Returns:
-            None
-        """
-        if memory:
-            assistant_message = SessionMessageBlock.from_segments(
-                SessionMessageRole.ASSISTANT,
-                (ContentSegment.text_segment(content),),
-            )
-            if assistant_message is not None:
-                await memory.add_session_event(
-                    session_id=session_id,
-                    message=assistant_message,
-                )
+        text = message_text.strip()
+        if text.startswith("<thought>") and text.endswith("</thought>"):
+            text = text[9:-10].strip()
+        return text or None
 
     async def _process_tool_calls(
         self,
@@ -631,11 +496,146 @@ class Planner(BasePlanner):
 
         return ToolBatchExecutionResult(called_tools=called_tools)
 
-    def _normalize_assistant_tool_message(self, message_text: str | None) -> str | None:
-        """Normalize assistant text that accompanies tool calls."""
-        if not message_text:
-            return None
-        text = message_text.strip()
-        if text.startswith("<thought>") and text.endswith("</thought>"):
-            text = text[9:-10].strip()
-        return text or None
+    async def _run_turn_with_policy(self, request: TurnRequest, policy: TurnExecutionPolicy) -> None:
+        """Run one turn using the session-kind-specific execution policy."""
+        if await policy.should_skip(self, request):
+            return
+        try:
+            turn_result = await self._prepare_turn(
+                request=request,
+                is_sub_session=policy.kind is SessionKind.SUB,
+            )
+            if turn_result.force_finish is not None:
+                return
+            if not turn_result.tool_calls:
+                await policy.handle_text_response(self, request, turn_result.message_text)
+                return
+            tool_result = await self._process_tool_calls(
+                request.session_id,
+                turn_result.tool_calls,
+                turn_result.message_text,
+                request.memory,
+                hook_context=turn_result.hook_context,
+                enabled_groups=turn_result.resolved_groups,
+            )
+            if tool_result.force_finish is not None:
+                return
+            await policy.handle_tool_follow_up(
+                self,
+                request,
+                turn_result.task_type,
+                turn_result.resolved_groups,
+                tool_result.called_tools,
+            )
+        except Exception as exc:
+            await policy.handle_failure(self, request, exc)
+
+    async def _process_turn_request(self, request: TurnRequest) -> None:
+        """Execute one planner advancement cycle from typed turn request."""
+        async with get_session_lock(request.session_id):
+            await self._run_turn_with_policy(request, self._resolve_policy(request))
+
+    async def process_turn(self, request: TurnRequest) -> None:
+        """Execute one planner advancement cycle from typed turn request."""
+        await self._process_turn_request(request)
+
+    async def _run_main_session_turn(self, request: TurnRequest) -> None:
+        """Run one turn for a main session."""
+        await self._run_turn_with_policy(request, self.execution_policies[SessionKind.MAIN])
+
+    async def _run_sub_session_turn(self, request: TurnRequest) -> None:
+        """Run one turn for a sub-session."""
+        await self._run_turn_with_policy(request, self.execution_policies[SessionKind.SUB])
+
+    def _should_publish_follow_up(self, called_tools: list[str]) -> bool:
+        """Determine whether planner should enqueue internal follow-up.
+
+        Args:
+            called_tools (list[str]): Tool names executed in current turn.
+
+        Returns:
+            bool: True when at least one tool call executed.
+        """
+        return len(called_tools) > 0
+
+    async def _publish_follow_up_event(self, session_id: str, task_type: str, enabled_groups: list[str]) -> None:
+        """Publish one internal follow-up wakeup event."""
+        await publish_runtime_event(
+            event_type=EventType.USER_MESSAGE_RECEIVED,
+            session_id=session_id,
+            payload={
+                "internal_followup": True,
+                "trigger_turn": True,
+                "task_type": task_type,
+                "enabled_groups": enabled_groups,
+            },
+            source="planner_followup",
+        )
+
+    def _is_sub_session_terminal(self, sub_session_id: str) -> bool:
+        """Check whether a sub-session is already terminal in main-session state."""
+        return self.subtasks.is_sub_session_terminal(sub_session_id)
+
+    async def _mark_subtask_if_non_terminal(self, sub_session_id: str, status: str, summary: str) -> None:
+        """Mark subtask terminal only when it is not already terminal.
+
+        Args:
+            sub_session_id (str): Sub-session identifier.
+            status (str): Target terminal status.
+            summary (str): Terminal summary text.
+
+        Returns:
+            None
+        """
+        await self.subtasks.mark_subtask_if_non_terminal(sub_session_id, status, summary)
+
+    def _lookup_subtask_status(self, sub_session_id: str) -> str | None:
+        return self.subtasks.lookup_subtask_status(sub_session_id)
+
+    async def _publish_subtask_barrier_if_ready(self, sub_session_id: str) -> None:
+        """Publish aggregated barrier message when all subtasks are terminal.
+
+        Args:
+            sub_session_id (str): Any sub-session in the target main-session batch.
+
+        Returns:
+            None
+
+        Raises:
+            Exceptions during persistence or event publication are caught and logged.
+        """
+        await self.subtasks.publish_subtask_barrier_if_ready(sub_session_id)
+
+    async def _try_publish_subtask_barrier(self, sub_session_id: str) -> None:
+        """Compatibility wrapper for legacy subtask barrier helper name."""
+        await self._publish_subtask_barrier_if_ready(sub_session_id)
+
+    async def _notify_main_session_subtask_failure(self, sub_session_id: str, summary: str, status: str = "failed") -> None:
+        await self.subtasks.notify_main_session_subtask_failure(sub_session_id, summary, status=status)
+
+    async def _handle_text_fallback(
+        self,
+        session_id: str,
+        content: str,
+        memory: MemoryProvider | None,
+    ) -> None:
+        """Handle direct-text model output path.
+
+        Args:
+            session_id (str): Session identifier.
+            content (str): Model-generated text.
+            memory (PersistentMemory | None): Memory adapter for session persistence.
+
+        Returns:
+            None
+        """
+        if memory:
+            assistant_message = SessionMessageBlock.from_segments(
+                SessionMessageRole.ASSISTANT,
+                (ContentSegment.text_segment(content),),
+            )
+            if assistant_message is not None:
+                await memory.add_session_event(
+                    session_id=session_id,
+                    message=assistant_message,
+                )

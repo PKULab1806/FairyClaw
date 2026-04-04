@@ -14,6 +14,18 @@ from fairyclaw.core.agent.hooks.protocol import LlmChatMessage, LlmToolCallReque
 class TokenCounter:
     """Count approximate or exact tokens for chat payloads."""
 
+    @staticmethod
+    def _load_encoding(model: str):  # type: ignore[no-untyped-def]
+        try:
+            import tiktoken
+
+            try:
+                return tiktoken.encoding_for_model(model)
+            except KeyError:
+                return tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            return None
+
     def __init__(self, model: str = "gpt-4") -> None:
         self.model = model
         self._encoding = self._load_encoding(model)
@@ -25,6 +37,13 @@ class TokenCounter:
             return len(self._encoding.encode(normalized))
         # Rough fallback when tiktoken is unavailable.
         return max(1, len(normalized) // 4) if normalized else 0
+
+    def _count_content(self, content: str | list[dict[str, object]] | None) -> int:
+        if content is None:
+            return 0
+        if isinstance(content, str):
+            return self.count_text(content)
+        return self.count_json(content)
 
     def count_message(self, message: LlmChatMessage) -> int:
         """Count tokens for one LLM chat message."""
@@ -69,25 +88,6 @@ class TokenCounter:
             + 4
         )
 
-    def _count_content(self, content: str | list[dict[str, object]] | None) -> int:
-        if content is None:
-            return 0
-        if isinstance(content, str):
-            return self.count_text(content)
-        return self.count_json(content)
-
     def count_json(self, value: Any) -> int:
         """Count tokens for a structured payload by serializing it."""
         return self.count_text(json.dumps(value, ensure_ascii=False, sort_keys=True))
-
-    @staticmethod
-    def _load_encoding(model: str):  # type: ignore[no-untyped-def]
-        try:
-            import tiktoken
-
-            try:
-                return tiktoken.encoding_for_model(model)
-            except KeyError:
-                return tiktoken.get_encoding("cl100k_base")
-        except Exception:
-            return None

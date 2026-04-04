@@ -87,44 +87,81 @@ class OpenAICompatibleLLMClient:
         result = await self.chat_with_tools(messages=messages, tools=None)
         return result.text
 
-    async def chat_with_tools(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None) -> ChatResult:
-        """Run chat request with optional tools and fallback handling.
+    def _normalize_message_content(self, content: Any) -> str:
+        """Normalize model `content` payloads into plain text."""
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text.strip())
+            return "\n".join(parts).strip()
+        return str(content or "").strip()
+
+    def _parse_chat_result(self, data: dict[str, Any]) -> ChatResult:
+        """Parse raw API payload into ChatResult structure.
 
         Args:
-            messages (list[dict[str, Any]]): Chat message list.
-            tools (list[dict[str, Any]] | None): OpenAI-style tool schemas.
+            data (dict[str, Any]): API response payload.
 
         Returns:
-            ChatResult: Normalized model response.
-
-        Raises:
-            Exception: Re-raises primary or fallback exception when both attempts fail.
+            ChatResult: Normalized text and tool-call list.
         """
-        try:
-            return await self._chat_with_profile(self.profile, messages=messages, tools=tools)
-        except Exception as primary_exc:
-            if not self._should_try_fallback(primary_exc):
-                raise
-            fallback = self.fallback_profile
-            if fallback is None:
-                raise
-            fallback_api_key = os.getenv(fallback.api_key_env, "").strip()
-            if not fallback_api_key:
-                logger.error(
-                    f"Fallback profile '{fallback.name}' is configured but API key env '{fallback.api_key_env}' is missing."
+        choices = data.get("choices", []) if isinstance(data, dict) else []
+        if not choices:
+            return ChatResult(text="", tool_calls=[])
+        message = choices[0].get("message", {})
+        text = self._normalize_message_content(message.get("content"))
+        calls: list[ToolCall] = []
+        for call in message.get("tool_calls", []) or []:
+            function = call.get("function", {})
+            calls.append(
+                ToolCall(
+                    id=str(call.get("id", "")),
+                    name=str(function.get("name", "")),
+                    arguments=str(function.get("arguments", "{}")),
                 )
-                raise
-            logger.warning(
-                f"Primary profile '{self.profile.name}' failed after retries. "
-                f"Falling back to profile '{fallback.name}' model='{fallback.model}'."
             )
-            try:
-                return await self._chat_with_profile(fallback, messages=messages, tools=tools)
-            except Exception as fallback_exc:
-                logger.error(
-                    f"Fallback profile '{fallback.name}' also failed: {type(fallback_exc).__name__} - {fallback_exc}"
-                )
-                raise fallback_exc from primary_exc
+        return ChatResult(text=text, tool_calls=calls)
+
+    def _raise_if_payload_error(self, data: dict[str, Any]) -> None:
+        """Raise an exception when the payload contains an explicit error object."""
+        if "error" not in data:
+            return
+        err_obj = data["error"]
+        err_code = err_obj.get("code", "unknown_code") if isinstance(err_obj, dict) else "unknown_code"
+        err_msg = err_obj.get("message", str(err_obj)) if isinstance(err_obj, dict) else str(err_obj)
+        logger.error(f"LLM API returned error in payload (Status 200): [{err_code}] {err_msg}")
+        raise RuntimeError(f"LLM API Payload Error: [{err_code}] {err_msg}")
+
+    def _log_bad_request_details(
+        self,
+        profile: LLMEndpointProfile,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        response: httpx.Response,
+    ) -> None:
+        """Log rich context for HTTP 400 responses to debug schema/argument issues."""
+        safe_headers = dict(headers)
+        if "Authorization" in safe_headers:
+            safe_headers["Authorization"] = "Bearer ***"
+        error_details = (
+            "=== HTTP 400 BAD REQUEST DETAILED LOG ===\n"
+            f"URL: {url}\n"
+            f"Profile: {profile.name}\n"
+            f"Model: {profile.model}\n"
+            f"Request Headers: {json.dumps(safe_headers, indent=2)}\n"
+            f"Response Status: {response.status_code}\n"
+            f"Response Headers: {json.dumps(dict(response.headers), indent=2)}\n"
+            f"Response Body: {response.text}\n"
+            f"Request Payload:\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
+            "==========================================="
+        )
+        logger.error(error_details)
 
     async def _chat_with_profile(
         self,
@@ -228,78 +265,41 @@ class OpenAICompatibleLLMClient:
             return exc.response.status_code in RETRYABLE_HTTP_STATUS_CODES
         return False
 
-    def _parse_chat_result(self, data: dict[str, Any]) -> ChatResult:
-        """Parse raw API payload into ChatResult structure.
+    async def chat_with_tools(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None) -> ChatResult:
+        """Run chat request with optional tools and fallback handling.
 
         Args:
-            data (dict[str, Any]): API response payload.
+            messages (list[dict[str, Any]]): Chat message list.
+            tools (list[dict[str, Any]] | None): OpenAI-style tool schemas.
 
         Returns:
-            ChatResult: Normalized text and tool-call list.
+            ChatResult: Normalized model response.
+
+        Raises:
+            Exception: Re-raises primary or fallback exception when both attempts fail.
         """
-        choices = data.get("choices", []) if isinstance(data, dict) else []
-        if not choices:
-            return ChatResult(text="", tool_calls=[])
-        message = choices[0].get("message", {})
-        text = self._normalize_message_content(message.get("content"))
-        calls: list[ToolCall] = []
-        for call in message.get("tool_calls", []) or []:
-            function = call.get("function", {})
-            calls.append(
-                ToolCall(
-                    id=str(call.get("id", "")),
-                    name=str(function.get("name", "")),
-                    arguments=str(function.get("arguments", "{}")),
+        try:
+            return await self._chat_with_profile(self.profile, messages=messages, tools=tools)
+        except Exception as primary_exc:
+            if not self._should_try_fallback(primary_exc):
+                raise
+            fallback = self.fallback_profile
+            if fallback is None:
+                raise
+            fallback_api_key = os.getenv(fallback.api_key_env, "").strip()
+            if not fallback_api_key:
+                logger.error(
+                    f"Fallback profile '{fallback.name}' is configured but API key env '{fallback.api_key_env}' is missing."
                 )
+                raise
+            logger.warning(
+                f"Primary profile '{self.profile.name}' failed after retries. "
+                f"Falling back to profile '{fallback.name}' model='{fallback.model}'."
             )
-        return ChatResult(text=text, tool_calls=calls)
-
-    def _normalize_message_content(self, content: Any) -> str:
-        """Normalize model `content` payloads into plain text."""
-        if isinstance(content, str):
-            return content.strip()
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, dict):
-                    text = item.get("text")
-                    if isinstance(text, str) and text.strip():
-                        parts.append(text.strip())
-            return "\n".join(parts).strip()
-        return str(content or "").strip()
-
-    def _raise_if_payload_error(self, data: dict[str, Any]) -> None:
-        """Raise an exception when the payload contains an explicit error object."""
-        if "error" not in data:
-            return
-        err_obj = data["error"]
-        err_code = err_obj.get("code", "unknown_code") if isinstance(err_obj, dict) else "unknown_code"
-        err_msg = err_obj.get("message", str(err_obj)) if isinstance(err_obj, dict) else str(err_obj)
-        logger.error(f"LLM API returned error in payload (Status 200): [{err_code}] {err_msg}")
-        raise RuntimeError(f"LLM API Payload Error: [{err_code}] {err_msg}")
-
-    def _log_bad_request_details(
-        self,
-        profile: LLMEndpointProfile,
-        url: str,
-        headers: dict[str, str],
-        payload: dict[str, Any],
-        response: httpx.Response,
-    ) -> None:
-        """Log rich context for HTTP 400 responses to debug schema/argument issues."""
-        safe_headers = dict(headers)
-        if "Authorization" in safe_headers:
-            safe_headers["Authorization"] = "Bearer ***"
-        error_details = (
-            "=== HTTP 400 BAD REQUEST DETAILED LOG ===\n"
-            f"URL: {url}\n"
-            f"Profile: {profile.name}\n"
-            f"Model: {profile.model}\n"
-            f"Request Headers: {json.dumps(safe_headers, indent=2)}\n"
-            f"Response Status: {response.status_code}\n"
-            f"Response Headers: {json.dumps(dict(response.headers), indent=2)}\n"
-            f"Response Body: {response.text}\n"
-            f"Request Payload:\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
-            "==========================================="
-        )
-        logger.error(error_details)
+            try:
+                return await self._chat_with_profile(fallback, messages=messages, tools=tools)
+            except Exception as fallback_exc:
+                logger.error(
+                    f"Fallback profile '{fallback.name}' also failed: {type(fallback_exc).__name__} - {fallback_exc}"
+                )
+                raise fallback_exc from primary_exc

@@ -28,4 +28,3 @@ async def execute_hook(
         artifacts={"route_hints": {"enabled_groups": current}},
         patched_payload=payload,
     )
-

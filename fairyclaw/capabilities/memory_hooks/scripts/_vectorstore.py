@@ -17,11 +17,33 @@ logger = logging.getLogger(__name__)
 class LocalVectorStore:
     """Minimal local Qdrant wrapper for memory extraction."""
 
+    @staticmethod
+    def _resolve_storage_path(storage_path: str) -> Path:
+        path = Path(storage_path)
+        if path.is_absolute():
+            return path
+        project_root = Path(settings.data_dir).resolve().parent
+        return (project_root / path).resolve()
+
     def __init__(self, storage_path: str, collection_name: str) -> None:
         self.storage_path = self._resolve_storage_path(storage_path)
         self.collection_name = collection_name
         self._client = None
         self._models = None
+
+    def _get_client_and_models(self):  # type: ignore[no-untyped-def]
+        if self._client is not None and self._models is not None:
+            return self._client, self._models
+        try:
+            from qdrant_client import QdrantClient, models
+        except Exception as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError(
+                "qdrant-client is required for memory extraction. Install the optional dependency first."
+            ) from exc
+        self.storage_path.mkdir(parents=True, exist_ok=True)
+        self._client = QdrantClient(path=str(self.storage_path))
+        self._models = models
+        return self._client, self._models
 
     def search(self, query_vector: list[float], limit: int = 3, filter_payload: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """Search points using vector similarity (qdrant-client 1.7+ uses query_points, not search)."""
@@ -84,6 +106,29 @@ class LocalVectorStore:
             )
             return []
 
+    def _ensure_collection(self, client, models, vector_size: int) -> None:  # type: ignore[no-untyped-def]
+        try:
+            client.get_collection(self.collection_name)
+            return
+        except Exception:
+            pass
+        client.create_collection(
+            collection_name=self.collection_name,
+            vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.COSINE),
+        )
+
+    @staticmethod
+    def _normalize_point_id(point_id: object) -> str:
+        """Convert arbitrary business IDs into stable UUID strings."""
+        return str(uuid5(NAMESPACE_URL, str(point_id)))
+
+    @staticmethod
+    def _build_payload(point: dict[str, Any]) -> dict[str, Any]:
+        """Preserve the original business identifier inside payload."""
+        payload = dict(point.get("payload", {}) or {})
+        payload.setdefault("point_id", str(point.get("id", "")))
+        return payload
+
     def upsert(self, points: list[dict[str, Any]], vector_size: int) -> None:
         """Insert or update vector points."""
         if not points:
@@ -111,48 +156,3 @@ class LocalVectorStore:
                 exc_info=True,
             )
             raise
-
-    def _ensure_collection(self, client, models, vector_size: int) -> None:  # type: ignore[no-untyped-def]
-        try:
-            client.get_collection(self.collection_name)
-            return
-        except Exception:
-            pass
-        client.create_collection(
-            collection_name=self.collection_name,
-            vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.COSINE),
-        )
-
-    def _get_client_and_models(self):  # type: ignore[no-untyped-def]
-        if self._client is not None and self._models is not None:
-            return self._client, self._models
-        try:
-            from qdrant_client import QdrantClient, models
-        except Exception as exc:  # pragma: no cover - optional dependency
-            raise RuntimeError(
-                "qdrant-client is required for memory extraction. Install the optional dependency first."
-            ) from exc
-        self.storage_path.mkdir(parents=True, exist_ok=True)
-        self._client = QdrantClient(path=str(self.storage_path))
-        self._models = models
-        return self._client, self._models
-
-    @staticmethod
-    def _normalize_point_id(point_id: object) -> str:
-        """Convert arbitrary business IDs into stable UUID strings."""
-        return str(uuid5(NAMESPACE_URL, str(point_id)))
-
-    @staticmethod
-    def _build_payload(point: dict[str, Any]) -> dict[str, Any]:
-        """Preserve the original business identifier inside payload."""
-        payload = dict(point.get("payload", {}) or {})
-        payload.setdefault("point_id", str(point.get("id", "")))
-        return payload
-
-    @staticmethod
-    def _resolve_storage_path(storage_path: str) -> Path:
-        path = Path(storage_path)
-        if path.is_absolute():
-            return path
-        project_root = Path(settings.data_dir).resolve().parent
-        return (project_root / path).resolve()

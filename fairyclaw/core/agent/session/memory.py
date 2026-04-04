@@ -62,6 +62,12 @@ class PersistentMemory(MemoryProvider):
                 )
         return history
 
+    def _serialize_message_content(self, message: SessionMessageBlock) -> list[dict[str, object]]:
+        """Convert typed message block into persisted segment payload."""
+        if isinstance(message.body, SegmentsBody):
+            return [segment.to_dict() for segment in message.body.segments]
+        return [ContentSegment.text_segment(message.as_plain_text()).to_dict()]
+
     async def add_session_event(self, session_id: str, message: SessionMessageBlock) -> None:
         """Persist user-visible session event.
 
@@ -139,9 +145,3 @@ class PersistentMemory(MemoryProvider):
             from_event_id=snapshot.from_event_id,
             to_event_id=snapshot.to_event_id,
         )
-
-    def _serialize_message_content(self, message: SessionMessageBlock) -> list[dict[str, object]]:
-        """Convert typed message block into persisted segment payload."""
-        if isinstance(message.body, SegmentsBody):
-            return [segment.to_dict() for segment in message.body.segments]
-        return [ContentSegment.text_segment(message.as_plain_text()).to_dict()]

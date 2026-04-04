@@ -311,20 +311,6 @@ class RuntimeSessionScheduler:
                     )
                 )
 
-    async def on_event(self, event: RuntimeEvent) -> None:
-        """Route runtime events through a single scheduler entrypoint."""
-        normalized_type = event_type_value(event.type)
-        if normalized_type == EventType.USER_MESSAGE_RECEIVED.value:
-            await self._handle_user_message(event)
-            return
-        if normalized_type == EventType.SUBTASK_COMPLETED.value:
-            await self._handle_subtask_completed(event)
-            return
-        if normalized_type == EventType.WAKEUP_REQUESTED.value:
-            await self._handle_wakeup_requested(event)
-            return
-        await self.event_dispatcher.dispatch(event)
-
     async def _handle_user_message(self, event: RuntimeEvent) -> None:
         parsed = UserMessageReceivedEventPayload.from_runtime_event(event)
         trigger_turn = parsed.trigger_turn
@@ -358,3 +344,17 @@ class RuntimeSessionScheduler:
     async def _handle_wakeup_requested(self, event: RuntimeEvent) -> None:
         parsed = WakeupRequestedEventPayload.from_runtime_event(event)
         await self.run_session(event.session_id, wakeup_source=event.source, wakeup_reason=parsed.reason)
+
+    async def on_event(self, event: RuntimeEvent) -> None:
+        """Route runtime events through a single scheduler entrypoint."""
+        normalized_type = event_type_value(event.type)
+        if normalized_type == EventType.USER_MESSAGE_RECEIVED.value:
+            await self._handle_user_message(event)
+            return
+        if normalized_type == EventType.SUBTASK_COMPLETED.value:
+            await self._handle_subtask_completed(event)
+            return
+        if normalized_type == EventType.WAKEUP_REQUESTED.value:
+            await self._handle_wakeup_requested(event)
+            return
+        await self.event_dispatcher.dispatch(event)

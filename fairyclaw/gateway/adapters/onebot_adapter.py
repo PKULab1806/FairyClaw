@@ -47,84 +47,23 @@ class OneBotGatewayAdapter(GatewayAdapter):
         self.onebot_session_cmd_prefix = (settings.onebot_session_cmd_prefix or "").strip() or "/sess"
         self.session_store = OnebotSessionStore()
 
-    def build_router(self) -> APIRouter:
-        router = APIRouter()
+    def _default_session_title(self, *, user_id: int, group_id: int | None) -> str:
+        return f"OneBot User {user_id}" if group_id is None else f"OneBot User {user_id} (Group {group_id})"
 
-        @router.post("/")
-        @router.post("/onebot/event")
-        async def onebot_event(request: Request) -> dict[str, str]:
-            data = await request.json()
-            post_type = data.get("post_type")
-            if post_type != EVENT_POST_TYPE_MESSAGE:
-                return {"status": "ignored", "reason": "not a message event"}
-            user_id = data.get("user_id")
-            self_id = data.get("self_id")
-            group_id = data.get("group_id")
-            message = data.get("message")
-            if not user_id:
-                return {"status": "ignored", "reason": "no user_id"}
-            if self_id and str(user_id) == str(self_id):
-                return {"status": "ignored", "reason": "self message"}
-            message_type = data.get("message_type")
-            if self.onebot_allowed_user:
-                if message_type != MESSAGE_TYPE_PRIVATE:
-                    return {"status": "ignored", "reason": "only private allowed"}
-                if str(user_id) != str(self.onebot_allowed_user):
-                    return {"status": "ignored", "reason": "user not allowed"}
-            await self._process_inbound_message(
-                user_id=int(user_id),
-                group_id=int(group_id) if group_id is not None else None,
-                self_id=str(self_id) if self_id is not None else None,
-                message=message,
-            )
-            return {"status": "ok"}
-
-        return router
-
-    async def _process_inbound_message(
+    async def _open_onebot_session(
         self,
         *,
         user_id: int,
         group_id: int | None,
-        self_id: str | None,
-        message: Any,
-    ) -> None:
-        sender_ref = {
-            "platform": "onebot",
-            "user_id": str(user_id),
-            "group_id": str(group_id) if group_id is not None else None,
-            "self_id": self_id,
-        }
-        command_text = self._extract_text_message(message)
-        if command_text is not None:
-            handled = await self._handle_management_command(
-                user_id=user_id,
-                group_id=group_id,
-                sender_ref=sender_ref,
-                text=command_text,
-            )
-            if handled:
-                return
-
-        session_id = await self._resolve_session_id(
-            user_id=user_id,
-            group_id=group_id,
+        sender_ref: dict[str, Any],
+        title: str | None,
+    ) -> str:
+        return await self.runtime.open_session(
+            adapter_key=self.adapter_key,
+            platform="onebot",
+            title=title or self._default_session_title(user_id=user_id, group_id=group_id),
+            meta={"sender": sender_ref},
             sender_ref=sender_ref,
-        )
-
-        inbound_segments = await self._convert_message_to_segments(session_id=session_id, message=message)
-        has_text = any(segment.type.value == SEGMENT_TYPE_TEXT and (segment.text or "").strip() for segment in inbound_segments)
-        if not inbound_segments:
-            return
-        await self.runtime.submit_inbound(
-            GatewayInboundMessage(
-                session_id=session_id,
-                adapter_key=self.adapter_key,
-                segments=tuple(inbound_segments),
-                trigger_turn=has_text,
-                sender=GatewaySenderRef.from_dict(sender_ref),
-                meta={"message_id": new_frame_id("onebot_msg")},
-            )
         )
 
     async def _resolve_session_id(self, *, user_id: int, group_id: int | None, sender_ref: dict[str, Any]) -> str:
@@ -157,25 +96,6 @@ class OneBotGatewayAdapter(GatewayAdapter):
             session_id=session_id,
         )
         return session_id
-
-    async def _open_onebot_session(
-        self,
-        *,
-        user_id: int,
-        group_id: int | None,
-        sender_ref: dict[str, Any],
-        title: str | None,
-    ) -> str:
-        return await self.runtime.open_session(
-            adapter_key=self.adapter_key,
-            platform="onebot",
-            title=title or self._default_session_title(user_id=user_id, group_id=group_id),
-            meta={"sender": sender_ref},
-            sender_ref=sender_ref,
-        )
-
-    def _default_session_title(self, *, user_id: int, group_id: int | None) -> str:
-        return f"OneBot User {user_id}" if group_id is None else f"OneBot User {user_id} (Group {group_id})"
 
     def _extract_text_message(self, message: Any) -> str | None:
         if isinstance(message, str):
@@ -249,6 +169,52 @@ class OneBotGatewayAdapter(GatewayAdapter):
             return None, "多个会话标题以该前缀开头，请用更完整的名称或 session_id。"
 
         return None, f"未找到会话: {raw}"
+
+    async def _render_session_list(self, *, sender_ref: dict[str, Any]) -> str:
+        active_session_id = await self.session_store.get_active_session_id(
+            adapter_key=self.adapter_key,
+            sender_ref=sender_ref,
+        )
+        async with AsyncSessionLocal() as db:
+            route_repo = GatewaySessionRouteRepository(db)
+            items = await route_repo.list_sessions_for_onebot_sender(sender_ref=sender_ref)
+        if not items:
+            return "当前没有可切换的会话。"
+        lines = ["会话列表:"]
+        for item in items[:20]:
+            marker = "* " if item.session_id == active_session_id else "  "
+            timestamp = item.updated_at.strftime("%Y-%m-%d %H:%M:%S") if item.updated_at else "-"
+            title = item.title or "(untitled)"
+            lines.append(f"{marker}{item.session_id} | {title} | {timestamp}")
+        if len(items) > 20:
+            lines.append(f"... 共 {len(items)} 个会话，仅显示前 20 个")
+        return "\n".join(lines)
+
+    def _management_help_text(self) -> str:
+        prefix = self.onebot_session_cmd_prefix
+        return "\n".join(
+            [
+                "会话管理指令:",
+                f"{prefix} new [标题]",
+                f"{prefix} ls",
+                f"{prefix} checkout <session_id 或 标题>",
+                f"{prefix} co <session_id 或 标题>",
+                f"{prefix} rm <session_id 或 标题>  （永久删除该会话）",
+            ]
+        )
+
+    async def _send_onebot_message(self, *, user_id: int, group_id: int | None, message: Any) -> None:
+        endpoint = ONEBOT_SEND_GROUP_ENDPOINT if group_id is not None else ONEBOT_SEND_PRIVATE_ENDPOINT
+        url = f"{self.onebot_api_base}/{endpoint}"
+        payload: dict[str, Any] = {"message": message}
+        if group_id is not None:
+            payload["group_id"] = group_id
+        else:
+            payload["user_id"] = user_id
+        headers = {"Authorization": f"Bearer {self.onebot_access_token}"} if self.onebot_access_token else {}
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, json=payload, headers=headers, timeout=30.0)
+            response.raise_for_status()
 
     async def _handle_management_command(
         self,
@@ -385,38 +351,18 @@ class OneBotGatewayAdapter(GatewayAdapter):
         )
         return True
 
-    async def _render_session_list(self, *, sender_ref: dict[str, Any]) -> str:
-        active_session_id = await self.session_store.get_active_session_id(
-            adapter_key=self.adapter_key,
-            sender_ref=sender_ref,
-        )
-        async with AsyncSessionLocal() as db:
-            route_repo = GatewaySessionRouteRepository(db)
-            items = await route_repo.list_sessions_for_onebot_sender(sender_ref=sender_ref)
-        if not items:
-            return "当前没有可切换的会话。"
-        lines = ["会话列表:"]
-        for item in items[:20]:
-            marker = "* " if item.session_id == active_session_id else "  "
-            timestamp = item.updated_at.strftime("%Y-%m-%d %H:%M:%S") if item.updated_at else "-"
-            title = item.title or "(untitled)"
-            lines.append(f"{marker}{item.session_id} | {title} | {timestamp}")
-        if len(items) > 20:
-            lines.append(f"... 共 {len(items)} 个会话，仅显示前 20 个")
-        return "\n".join(lines)
-
-    def _management_help_text(self) -> str:
-        prefix = self.onebot_session_cmd_prefix
-        return "\n".join(
-            [
-                "会话管理指令:",
-                f"{prefix} new [标题]",
-                f"{prefix} ls",
-                f"{prefix} checkout <session_id 或 标题>",
-                f"{prefix} co <session_id 或 标题>",
-                f"{prefix} rm <session_id 或 标题>  （永久删除该会话）",
-            ]
-        )
+    async def _upload_remote_file(self, *, session_id: str, url: str, filename: str) -> str | None:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=30.0)
+            response.raise_for_status()
+            return await self.runtime.upload_file(
+                session_id=session_id,
+                adapter_key=self.adapter_key,
+                message_id=new_frame_id("onebot_file"),
+                content=response.content,
+                filename=filename,
+                mime_type=response.headers.get("content-type"),
+            )
 
     async def _convert_message_to_segments(self, *, session_id: str, message: Any) -> list[ContentSegment]:
         segments: list[ContentSegment] = []
@@ -460,18 +406,85 @@ class OneBotGatewayAdapter(GatewayAdapter):
                         segments.append(ContentSegment.file_segment(file_id))
         return segments
 
-    async def _upload_remote_file(self, *, session_id: str, url: str, filename: str) -> str | None:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, timeout=30.0)
-            response.raise_for_status()
-            return await self.runtime.upload_file(
+    async def _process_inbound_message(
+        self,
+        *,
+        user_id: int,
+        group_id: int | None,
+        self_id: str | None,
+        message: Any,
+    ) -> None:
+        sender_ref = {
+            "platform": "onebot",
+            "user_id": str(user_id),
+            "group_id": str(group_id) if group_id is not None else None,
+            "self_id": self_id,
+        }
+        command_text = self._extract_text_message(message)
+        if command_text is not None:
+            handled = await self._handle_management_command(
+                user_id=user_id,
+                group_id=group_id,
+                sender_ref=sender_ref,
+                text=command_text,
+            )
+            if handled:
+                return
+
+        session_id = await self._resolve_session_id(
+            user_id=user_id,
+            group_id=group_id,
+            sender_ref=sender_ref,
+        )
+
+        inbound_segments = await self._convert_message_to_segments(session_id=session_id, message=message)
+        has_text = any(segment.type.value == SEGMENT_TYPE_TEXT and (segment.text or "").strip() for segment in inbound_segments)
+        if not inbound_segments:
+            return
+        await self.runtime.submit_inbound(
+            GatewayInboundMessage(
                 session_id=session_id,
                 adapter_key=self.adapter_key,
-                message_id=new_frame_id("onebot_file"),
-                content=response.content,
-                filename=filename,
-                mime_type=response.headers.get("content-type"),
+                segments=tuple(inbound_segments),
+                trigger_turn=has_text,
+                sender=GatewaySenderRef.from_dict(sender_ref),
+                meta={"message_id": new_frame_id("onebot_msg")},
             )
+        )
+
+    def build_router(self) -> APIRouter:
+        router = APIRouter()
+
+        @router.post("/")
+        @router.post("/onebot/event")
+        async def onebot_event(request: Request) -> dict[str, str]:
+            data = await request.json()
+            post_type = data.get("post_type")
+            if post_type != EVENT_POST_TYPE_MESSAGE:
+                return {"status": "ignored", "reason": "not a message event"}
+            user_id = data.get("user_id")
+            self_id = data.get("self_id")
+            group_id = data.get("group_id")
+            message = data.get("message")
+            if not user_id:
+                return {"status": "ignored", "reason": "no user_id"}
+            if self_id and str(user_id) == str(self_id):
+                return {"status": "ignored", "reason": "self message"}
+            message_type = data.get("message_type")
+            if self.onebot_allowed_user:
+                if message_type != MESSAGE_TYPE_PRIVATE:
+                    return {"status": "ignored", "reason": "only private allowed"}
+                if str(user_id) != str(self.onebot_allowed_user):
+                    return {"status": "ignored", "reason": "user not allowed"}
+            await self._process_inbound_message(
+                user_id=int(user_id),
+                group_id=int(group_id) if group_id is not None else None,
+                self_id=str(self_id) if self_id is not None else None,
+                message=message,
+            )
+            return {"status": "ok"}
+
+        return router
 
     async def send(self, outbound: GatewayOutboundMessage) -> None:
         _, sender_ref = await self.runtime.route_store.resolve(outbound.session_id)
@@ -502,16 +515,3 @@ class OneBotGatewayAdapter(GatewayAdapter):
             await self._send_onebot_message(user_id=user_id, group_id=group_id, message=message)
             return
         raise RuntimeError(f"Unsupported outbound kind for OneBot adapter: {outbound.kind}")
-
-    async def _send_onebot_message(self, *, user_id: int, group_id: int | None, message: Any) -> None:
-        endpoint = ONEBOT_SEND_GROUP_ENDPOINT if group_id is not None else ONEBOT_SEND_PRIVATE_ENDPOINT
-        url = f"{self.onebot_api_base}/{endpoint}"
-        payload: dict[str, Any] = {"message": message}
-        if group_id is not None:
-            payload["group_id"] = group_id
-        else:
-            payload["user_id"] = user_id
-        headers = {"Authorization": f"Bearer {self.onebot_access_token}"} if self.onebot_access_token else {}
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=payload, headers=headers, timeout=30.0)
-            response.raise_for_status()

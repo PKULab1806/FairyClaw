@@ -76,4 +76,3 @@ async def get_memory(db: AsyncSession = Depends(get_db)) -> PersistentMemory:
     """
     repo = EventRepository(db)
     return PersistentMemory(repo)
-

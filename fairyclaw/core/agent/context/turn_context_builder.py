@@ -20,26 +20,9 @@ class TurnContextBuilder:
     def __init__(self, message_assembler: LlmMessageAssembler) -> None:
         self.message_assembler = message_assembler
 
-    def build(
-        self,
-        history_items: list[ChatHistoryItem],
-        user_segments: tuple[ContentSegment, ...],
-        session_id: str,
-        task_type: str,
-    ) -> tuple[list[LlmChatMessage], list[ChatHistoryItem], UserTurn | None]:
-        """Build typed LLM messages plus typed history/user IR for one turn."""
-        nesting_depth = session_id.count(SUB_SESSION_MARKER)
-        system_prompt = build_system_prompt(nesting_depth=nesting_depth, task_type=task_type)
-        history_entries, user_entry = self._split_current_user_turn(
-            history_items=list(history_items),
-            explicit_user_turn=UserTurn.from_segments(user_segments),
-        )
-        messages = self.message_assembler.assemble(
-            system_prompt=SystemPromptPart(text=system_prompt),
-            history_entries=history_entries,
-            user_entry=user_entry,
-        )
-        return messages, history_entries, user_entry
+    def _is_user_message(self, item: ChatHistoryItem) -> bool:
+        """Return whether a history item is a user-authored session block."""
+        return isinstance(item, SessionMessageBlock) and item.role is SessionMessageRole.USER
 
     def _split_current_user_turn(
         self,
@@ -61,6 +44,23 @@ class TurnContextBuilder:
 
         return history_items[:-1], UserTurn(message=last_item)
 
-    def _is_user_message(self, item: ChatHistoryItem) -> bool:
-        """Return whether a history item is a user-authored session block."""
-        return isinstance(item, SessionMessageBlock) and item.role is SessionMessageRole.USER
+    def build(
+        self,
+        history_items: list[ChatHistoryItem],
+        user_segments: tuple[ContentSegment, ...],
+        session_id: str,
+        task_type: str,
+    ) -> tuple[list[LlmChatMessage], list[ChatHistoryItem], UserTurn | None]:
+        """Build typed LLM messages plus typed history/user IR for one turn."""
+        nesting_depth = session_id.count(SUB_SESSION_MARKER)
+        system_prompt = build_system_prompt(nesting_depth=nesting_depth, task_type=task_type)
+        history_entries, user_entry = self._split_current_user_turn(
+            history_items=list(history_items),
+            explicit_user_turn=UserTurn.from_segments(user_segments),
+        )
+        messages = self.message_assembler.assemble(
+            system_prompt=SystemPromptPart(text=system_prompt),
+            history_entries=history_entries,
+            user_entry=user_entry,
+        )
+        return messages, history_entries, user_entry

@@ -87,6 +87,181 @@ class WsBridgeClient:
             "max_chunk_bytes": settings.bridge_max_chunk_bytes,
         }
 
+    async def _send_frame(self, frame: BridgeFrame) -> None:
+        async with self._send_lock:
+            if self._ws is None:
+                raise RuntimeError("Bridge websocket is not connected")
+            await self._ws.send(frame.to_json())
+
+    async def _handshake(self) -> None:
+        adapters = tuple(adapter.descriptor() for adapter in self.runtime.adapters.values())
+        hello = BridgeFrame(
+            type=FRAME_HELLO,
+            payload=HelloPayload(
+                gateway_id=settings.gateway_id,
+                token=settings.bridge_token,
+                adapters=adapters,
+                supports={"resume": True},
+            ).to_dict(),
+            id=new_frame_id("hello"),
+        )
+        await self._send_frame(hello)
+        raw = await self._ws.recv()
+        frame = BridgeFrame.from_json(raw)
+        if frame.type != FRAME_HELLO_ACK:
+            raise RuntimeError(f"Unexpected handshake frame: {frame.type}")
+        if not bool(frame.payload.get("ok")):
+            error = frame.payload.get("error") if isinstance(frame.payload.get("error"), dict) else {}
+            raise RuntimeError(str(error.get("message") or "Bridge hello rejected"))
+        limits = frame.payload.get("limits")
+        if isinstance(limits, dict):
+            self._limits.update(limits)
+        self._ready_event.set()
+        resume = BridgeFrame(
+            type=FRAME_RESUME,
+            payload=ResumePayload(
+                gateway_id=settings.gateway_id,
+                last_ack_inbound_id=self._last_ack_inbound_id,
+                last_ack_outbound_id=self._last_ack_outbound_id,
+            ).to_dict(),
+            id=new_frame_id("resume"),
+        )
+        await self._send_frame(resume)
+        for frame in list(self._pending_inbound_frames.values()):
+            await self._send_frame(frame)
+
+    async def _dispatch_outbound_and_ack(self, frame: BridgeFrame) -> None:
+        """Run adapter send off the receiver loop so file_get can be interleaved on this socket."""
+        outbound = GatewayOutboundMessage.from_payload(frame.payload)
+        try:
+            await self.runtime.dispatch_outbound(outbound)
+            await self._send_frame(
+                BridgeFrame(
+                    type=FRAME_ACK,
+                    payload=AckPayload(ref_type="outbound", ref_id=frame.id, status=ACK_STATUS_OK).to_dict(),
+                    id=new_frame_id("ack"),
+                )
+            )
+            self._last_ack_outbound_id = frame.id
+        except Exception as exc:
+            logger.exception("Outbound dispatch failed: %s", exc)
+            error_code = "route_not_found" if "Missing gateway route" in str(exc) else "adapter_send_failed"
+            try:
+                await self._send_frame(
+                    BridgeFrame(
+                        type=FRAME_ACK,
+                        payload=AckPayload(
+                            ref_type="outbound",
+                            ref_id=frame.id,
+                            status="failed",
+                            error={"code": error_code, "message": str(exc)},
+                        ).to_dict(),
+                        id=new_frame_id("ack"),
+                    )
+                )
+            except Exception as send_exc:
+                logger.warning("Failed to send outbound failure ack: %s", send_exc)
+
+    async def _handle_frame(self, frame: BridgeFrame) -> None:
+        if frame.type == FRAME_ACK:
+            ref_id = str(frame.payload.get("ref_id") or "")
+            waiter = self._ack_waiters.pop(ref_id, None)
+            if waiter and not waiter.done():
+                waiter.set_result(frame)
+            if str(frame.payload.get("status") or "") in {ACK_STATUS_OK, ACK_STATUS_DUPLICATE}:
+                self._last_ack_inbound_id = ref_id
+                self._pending_inbound_frames.pop(ref_id, None)
+            return
+
+        if frame.type == FRAME_SESSION_OPEN_ACK:
+            waiter = self._session_waiters.pop(frame.id, None)
+            if waiter and not waiter.done():
+                waiter.set_result(frame)
+            return
+
+        if frame.type == FRAME_FILE_PUT_ACK:
+            waiter = self._file_put_waiters.pop(frame.id, None)
+            if waiter and not waiter.done():
+                waiter.set_result(frame)
+            return
+
+        if frame.type == FRAME_FILE_GET_CHUNK:
+            request_id = str(frame.payload.get("request_id") or "")
+            state = self._downloads.get(request_id)
+            if state is None:
+                return
+            seq = int(frame.payload.get("seq") or 0)
+            data_b64 = str(frame.payload.get("data_b64") or "")
+            state.chunks[seq] = base64.b64decode(data_b64.encode("utf-8"))
+            filename = frame.payload.get("filename")
+            mime_type = frame.payload.get("mime_type")
+            if isinstance(filename, str):
+                state.filename = filename
+            if isinstance(mime_type, str):
+                state.mime_type = mime_type
+            return
+
+        if frame.type == FRAME_FILE_GET_ACK:
+            request_id = str(frame.payload.get("request_id") or "")
+            state = self._downloads.get(request_id)
+            if state and state.ack_future and not state.ack_future.done():
+                state.ack_future.set_result(frame)
+            return
+
+        if frame.type == FRAME_OUTBOUND:
+            # Must not await dispatch_outbound on the receiver task: adapters may call
+            # download_file(), which reuses this WebSocket for file_get chunks. Blocking
+            # here deadlocks the connection (receiver cannot read chunk frames).
+            asyncio.create_task(self._dispatch_outbound_and_ack(frame))
+            return
+
+        if frame.type == FRAME_HEARTBEAT:
+            await self._send_frame(
+                BridgeFrame(type=FRAME_HEARTBEAT, payload=frame.payload, id=new_frame_id("hb")),
+            )
+            return
+
+    async def _receiver_loop(self) -> None:
+        while True:
+            raw = await self._ws.recv()
+            frame = BridgeFrame.from_json(raw)
+            await self._handle_frame(frame)
+
+    async def _heartbeat_loop(self) -> None:
+        seq = 0
+        while True:
+            await asyncio.sleep(10)
+            seq += 1
+            await self._send_frame(
+                BridgeFrame(type=FRAME_HEARTBEAT, payload={"seq": seq}, id=new_frame_id("hb")),
+            )
+
+    async def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                async with websockets.connect(settings.gateway_bridge_url, max_size=None) as websocket:
+                    self._ws = websocket
+                    await self._handshake()
+                    self._receiver_task = asyncio.create_task(self._receiver_loop())
+                    self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+                    await self._receiver_task
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Bridge client disconnected: %s", exc)
+            finally:
+                self._ready_event.clear()
+                self._ws = None
+                if self._heartbeat_task:
+                    self._heartbeat_task.cancel()
+                    await asyncio.gather(self._heartbeat_task, return_exceptions=True)
+                    self._heartbeat_task = None
+                if self._receiver_task:
+                    await asyncio.gather(self._receiver_task, return_exceptions=True)
+                    self._receiver_task = None
+            if not self._stop_event.is_set():
+                await asyncio.sleep(settings.gateway_reconnect_seconds)
+
     async def start(self) -> None:
         """Start background reconnect loop."""
         self._stop_event.clear()
@@ -248,181 +423,6 @@ class WsBridgeClient:
             raise RuntimeError(str(error.get("message") or "Bridge failed to download file"))
         content = b"".join(state.chunks[index] for index in sorted(state.chunks.keys()))
         return content, state.filename, state.mime_type
-
-    async def _run(self) -> None:
-        while not self._stop_event.is_set():
-            try:
-                async with websockets.connect(settings.gateway_bridge_url, max_size=None) as websocket:
-                    self._ws = websocket
-                    await self._handshake()
-                    self._receiver_task = asyncio.create_task(self._receiver_loop())
-                    self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-                    await self._receiver_task
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning("Bridge client disconnected: %s", exc)
-            finally:
-                self._ready_event.clear()
-                self._ws = None
-                if self._heartbeat_task:
-                    self._heartbeat_task.cancel()
-                    await asyncio.gather(self._heartbeat_task, return_exceptions=True)
-                    self._heartbeat_task = None
-                if self._receiver_task:
-                    await asyncio.gather(self._receiver_task, return_exceptions=True)
-                    self._receiver_task = None
-            if not self._stop_event.is_set():
-                await asyncio.sleep(settings.gateway_reconnect_seconds)
-
-    async def _handshake(self) -> None:
-        adapters = tuple(adapter.descriptor() for adapter in self.runtime.adapters.values())
-        hello = BridgeFrame(
-            type=FRAME_HELLO,
-            payload=HelloPayload(
-                gateway_id=settings.gateway_id,
-                token=settings.bridge_token,
-                adapters=adapters,
-                supports={"resume": True},
-            ).to_dict(),
-            id=new_frame_id("hello"),
-        )
-        await self._send_frame(hello)
-        raw = await self._ws.recv()
-        frame = BridgeFrame.from_json(raw)
-        if frame.type != FRAME_HELLO_ACK:
-            raise RuntimeError(f"Unexpected handshake frame: {frame.type}")
-        if not bool(frame.payload.get("ok")):
-            error = frame.payload.get("error") if isinstance(frame.payload.get("error"), dict) else {}
-            raise RuntimeError(str(error.get("message") or "Bridge hello rejected"))
-        limits = frame.payload.get("limits")
-        if isinstance(limits, dict):
-            self._limits.update(limits)
-        self._ready_event.set()
-        resume = BridgeFrame(
-            type=FRAME_RESUME,
-            payload=ResumePayload(
-                gateway_id=settings.gateway_id,
-                last_ack_inbound_id=self._last_ack_inbound_id,
-                last_ack_outbound_id=self._last_ack_outbound_id,
-            ).to_dict(),
-            id=new_frame_id("resume"),
-        )
-        await self._send_frame(resume)
-        for frame in list(self._pending_inbound_frames.values()):
-            await self._send_frame(frame)
-
-    async def _send_frame(self, frame: BridgeFrame) -> None:
-        async with self._send_lock:
-            if self._ws is None:
-                raise RuntimeError("Bridge websocket is not connected")
-            await self._ws.send(frame.to_json())
-
-    async def _receiver_loop(self) -> None:
-        while True:
-            raw = await self._ws.recv()
-            frame = BridgeFrame.from_json(raw)
-            await self._handle_frame(frame)
-
-    async def _handle_frame(self, frame: BridgeFrame) -> None:
-        if frame.type == FRAME_ACK:
-            ref_id = str(frame.payload.get("ref_id") or "")
-            waiter = self._ack_waiters.pop(ref_id, None)
-            if waiter and not waiter.done():
-                waiter.set_result(frame)
-            if str(frame.payload.get("status") or "") in {ACK_STATUS_OK, ACK_STATUS_DUPLICATE}:
-                self._last_ack_inbound_id = ref_id
-                self._pending_inbound_frames.pop(ref_id, None)
-            return
-
-        if frame.type == FRAME_SESSION_OPEN_ACK:
-            waiter = self._session_waiters.pop(frame.id, None)
-            if waiter and not waiter.done():
-                waiter.set_result(frame)
-            return
-
-        if frame.type == FRAME_FILE_PUT_ACK:
-            waiter = self._file_put_waiters.pop(frame.id, None)
-            if waiter and not waiter.done():
-                waiter.set_result(frame)
-            return
-
-        if frame.type == FRAME_FILE_GET_CHUNK:
-            request_id = str(frame.payload.get("request_id") or "")
-            state = self._downloads.get(request_id)
-            if state is None:
-                return
-            seq = int(frame.payload.get("seq") or 0)
-            data_b64 = str(frame.payload.get("data_b64") or "")
-            state.chunks[seq] = base64.b64decode(data_b64.encode("utf-8"))
-            filename = frame.payload.get("filename")
-            mime_type = frame.payload.get("mime_type")
-            if isinstance(filename, str):
-                state.filename = filename
-            if isinstance(mime_type, str):
-                state.mime_type = mime_type
-            return
-
-        if frame.type == FRAME_FILE_GET_ACK:
-            request_id = str(frame.payload.get("request_id") or "")
-            state = self._downloads.get(request_id)
-            if state and state.ack_future and not state.ack_future.done():
-                state.ack_future.set_result(frame)
-            return
-
-        if frame.type == FRAME_OUTBOUND:
-            # Must not await dispatch_outbound on the receiver task: adapters may call
-            # download_file(), which reuses this WebSocket for file_get chunks. Blocking
-            # here deadlocks the connection (receiver cannot read chunk frames).
-            asyncio.create_task(self._dispatch_outbound_and_ack(frame))
-            return
-
-        if frame.type == FRAME_HEARTBEAT:
-            await self._send_frame(
-                BridgeFrame(type=FRAME_HEARTBEAT, payload=frame.payload, id=new_frame_id("hb")),
-            )
-            return
-
-    async def _dispatch_outbound_and_ack(self, frame: BridgeFrame) -> None:
-        """Run adapter send off the receiver loop so file_get can be interleaved on this socket."""
-        outbound = GatewayOutboundMessage.from_payload(frame.payload)
-        try:
-            await self.runtime.dispatch_outbound(outbound)
-            await self._send_frame(
-                BridgeFrame(
-                    type=FRAME_ACK,
-                    payload=AckPayload(ref_type="outbound", ref_id=frame.id, status=ACK_STATUS_OK).to_dict(),
-                    id=new_frame_id("ack"),
-                )
-            )
-            self._last_ack_outbound_id = frame.id
-        except Exception as exc:
-            logger.exception("Outbound dispatch failed: %s", exc)
-            error_code = "route_not_found" if "Missing gateway route" in str(exc) else "adapter_send_failed"
-            try:
-                await self._send_frame(
-                    BridgeFrame(
-                        type=FRAME_ACK,
-                        payload=AckPayload(
-                            ref_type="outbound",
-                            ref_id=frame.id,
-                            status="failed",
-                            error={"code": error_code, "message": str(exc)},
-                        ).to_dict(),
-                        id=new_frame_id("ack"),
-                    )
-                )
-            except Exception as send_exc:
-                logger.warning("Failed to send outbound failure ack: %s", send_exc)
-
-    async def _heartbeat_loop(self) -> None:
-        seq = 0
-        while True:
-            await asyncio.sleep(10)
-            seq += 1
-            await self._send_frame(
-                BridgeFrame(type=FRAME_HEARTBEAT, payload={"seq": seq}, id=new_frame_id("hb")),
-            )
 
 
 from typing import TYPE_CHECKING

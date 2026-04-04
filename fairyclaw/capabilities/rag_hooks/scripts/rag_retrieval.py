@@ -27,6 +27,52 @@ DEFAULT_CONFIG = {
 }
 
 
+def _load_config() -> dict[str, object]:
+    raw = load_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
+    config = dict(DEFAULT_CONFIG)
+    config.update(raw)
+    return config
+
+
+def _candidate_session_ids(session_id: str) -> list[str]:
+    if SUB_SESSION_MARKER not in session_id:
+        return [session_id]
+    root_session = session_id.split(SUB_SESSION_MARKER, 1)[0]
+    return [session_id, root_session]
+
+
+def _build_rag_text(results: list[dict[str, object]]) -> str:
+    lines = ["[RecalledMemory]"]
+    for index, result in enumerate(results, start=1):
+        payload = result["payload"]
+        if not isinstance(payload, dict):
+            continue
+        category = str(payload.get("category", "fact"))
+        text = str(payload.get("text", "")).strip()
+        if not text:
+            continue
+        lines.append(f"{index}. ({category}) {text}")
+    lines.append("[/RecalledMemory]")
+    return "\n".join(lines)
+
+
+def _fit_to_token_cap(text: str, token_cap: int, counter: TokenCounter) -> str:
+    if token_cap <= 0 or counter.count_text(text) <= token_cap:
+        return text
+    low = 0
+    high = len(text)
+    best = ""
+    while low <= high:
+        mid = (low + high) // 2
+        candidate = f"{text[:mid].rstrip()}\n...[truncated]\n[/RecalledMemory]"
+        if counter.count_text(candidate) <= token_cap:
+            best = candidate
+            low = mid + 1
+        else:
+            high = mid - 1
+    return best
+
+
 async def execute_hook(
     hook_input: HookStageInput[BeforeLlmCallHookPayload],
 ) -> HookStageOutput[BeforeLlmCallHookPayload]:
@@ -97,50 +143,3 @@ async def execute_hook(
             "embedding_dimensions": embedding_profile.dimensions or len(query_vector),
         },
     )
-
-
-def _load_config() -> dict[str, object]:
-    raw = load_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
-    config = dict(DEFAULT_CONFIG)
-    config.update(raw)
-    return config
-
-
-def _candidate_session_ids(session_id: str) -> list[str]:
-    if SUB_SESSION_MARKER not in session_id:
-        return [session_id]
-    root_session = session_id.split(SUB_SESSION_MARKER, 1)[0]
-    return [session_id, root_session]
-
-
-def _build_rag_text(results: list[dict[str, object]]) -> str:
-    lines = ["[RecalledMemory]"]
-    for index, result in enumerate(results, start=1):
-        payload = result["payload"]
-        if not isinstance(payload, dict):
-            continue
-        category = str(payload.get("category", "fact"))
-        text = str(payload.get("text", "")).strip()
-        if not text:
-            continue
-        lines.append(f"{index}. ({category}) {text}")
-    lines.append("[/RecalledMemory]")
-    return "\n".join(lines)
-
-
-def _fit_to_token_cap(text: str, token_cap: int, counter: TokenCounter) -> str:
-    if token_cap <= 0 or counter.count_text(text) <= token_cap:
-        return text
-    low = 0
-    high = len(text)
-    best = ""
-    while low <= high:
-        mid = (low + high) // 2
-        candidate = f"{text[:mid].rstrip()}\n...[truncated]\n[/RecalledMemory]"
-        if counter.count_text(candidate) <= token_cap:
-            best = candidate
-            low = mid + 1
-        else:
-            high = mid - 1
-    return best
-

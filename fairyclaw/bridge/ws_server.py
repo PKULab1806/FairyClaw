@@ -172,23 +172,6 @@ class WsBridgeServer:
                 continue
             await websocket.send_text(frame.to_json())
 
-    async def handle_connection(self, websocket: WebSocket) -> None:
-        """Accept and process one gateway WebSocket connection."""
-        await websocket.accept()
-        try:
-            while True:
-                raw = await websocket.receive_text()
-                frame = BridgeFrame.from_json(raw)
-                await self._handle_frame(websocket, frame)
-        except WebSocketDisconnect:
-            logger.info("Gateway bridge disconnected")
-        finally:
-            async with self._state_lock:
-                if self._active_websocket is websocket:
-                    self._active_websocket = None
-                    self._active_gateway_id = None
-                    self._connection_id = None
-
     async def _handle_frame(self, websocket: WebSocket, frame: BridgeFrame) -> None:
         frame_type = frame.type
         if frame_type == FRAME_HELLO:
@@ -370,6 +353,23 @@ class WsBridgeServer:
             status=ACK_STATUS_INVALID,
             error={"code": "invalid_frame", "message": f"Unsupported frame type: {frame.type}"},
         )
+
+    async def handle_connection(self, websocket: WebSocket) -> None:
+        """Accept and process one gateway WebSocket connection."""
+        await websocket.accept()
+        try:
+            while True:
+                raw = await websocket.receive_text()
+                frame = BridgeFrame.from_json(raw)
+                await self._handle_frame(websocket, frame)
+        except WebSocketDisconnect:
+            logger.info("Gateway bridge disconnected")
+        finally:
+            async with self._state_lock:
+                if self._active_websocket is websocket:
+                    self._active_websocket = None
+                    self._active_gateway_id = None
+                    self._connection_id = None
 
 
 def create_ws_bridge_router(server: WsBridgeServer) -> APIRouter:

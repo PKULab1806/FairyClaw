@@ -63,4 +63,3 @@ class MemoryProvider(ABC):
     ) -> CompactionSnapshot | None:
         """Persist a compaction snapshot when supported."""
         return None
-
