@@ -2,9 +2,10 @@
 # Copyright (c) 2026 FairyClaw contributors, PKU DS Lab
 import asyncio
 from typing import Any, Dict
-from fairyclaw.core.capabilities.models import ToolContext
-from fairyclaw.config import settings
-from fairyclaw.core.agent.session.global_state import is_sub_session_cancel_requested
+from fairyclaw.sdk.group_runtime import expect_group_config
+from fairyclaw.sdk.subtasks import is_sub_session_cancel_requested
+from fairyclaw.sdk.tools import ToolContext
+from fairyclaw.capabilities.core_ops.config import CoreOpsRuntimeConfig
 
 async def execute(args: Dict[str, Any], context: ToolContext) -> str:
     """Execute shell command with timeout and captured output streams.
@@ -27,9 +28,8 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
         - Returns execution error when subprocess creation fails.
     """
     command = args.get("command")
-    
-    # Use timeout from settings
-    timeout = settings.execution_timeout_seconds
+    cfg = expect_group_config(context, CoreOpsRuntimeConfig)
+    timeout = cfg.execution_timeout_seconds
 
     if not command:
         return "Error: command is required."

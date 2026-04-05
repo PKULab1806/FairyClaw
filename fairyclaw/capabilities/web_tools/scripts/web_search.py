@@ -2,13 +2,15 @@
 # Copyright (c) 2026 FairyClaw contributors, PKU DS Lab
 from typing import Any, Dict
 
-from fairyclaw.core.capabilities.models import ToolContext
-from fairyclaw.config.settings import settings
+from fairyclaw.sdk.group_runtime import expect_group_config
+from fairyclaw.sdk.tools import ToolContext
+from fairyclaw.capabilities.web_tools.config import WebToolsRuntimeConfig
 from fairyclaw.infrastructure.web.ddgs_client import ddgs_search
 
 
-def _proxy() -> str:
-    raw = settings.web_proxy or ""
+def _proxy(context: ToolContext) -> str:
+    cfg = expect_group_config(context, WebToolsRuntimeConfig)
+    raw = cfg.web_proxy or ""
     if raw and "://" not in raw:
         return f"http://{raw}"
     return raw
@@ -29,7 +31,7 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
         return "Error: Query is required."
 
     max_results = int(args.get("max_results", 5))
-    proxy_url = _proxy() or None
+    proxy_url = _proxy(context) or None
 
     try:
         results = await ddgs_search(query, max_results=max_results, proxy_url=proxy_url)

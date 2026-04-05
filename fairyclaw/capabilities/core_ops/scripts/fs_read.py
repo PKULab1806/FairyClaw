@@ -2,8 +2,7 @@
 # Copyright (c) 2026 FairyClaw contributors, PKU DS Lab
 import os
 from typing import Any, Dict
-from fairyclaw.core.capabilities.models import ToolContext, resolve_safe_path
-from fairyclaw.config import settings
+from fairyclaw.sdk.tools import ToolContext, resolve_safe_path
 
 async def execute(args: Dict[str, Any], context: ToolContext) -> str:
     """Read UTF-8 text content from a local file under allowed root.
@@ -30,7 +29,7 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
         return "Error: file_path is required."
         
     # 1. Resolve Path
-    root_dir = settings.filesystem_root_dir
+    root_dir = context.filesystem_root_dir
     safe_path, error = resolve_safe_path(file_path, root_dir)
     if error or safe_path is None:
         return error or "Error: Invalid path."

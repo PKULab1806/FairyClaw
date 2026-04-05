@@ -2,7 +2,7 @@
 # Copyright (c) 2026 FairyClaw contributors, PKU DS Lab
 from typing import Any, Dict
 from fairyclaw.infrastructure.database.repository import FileRepository
-from fairyclaw.core.capabilities.models import ToolContext, get_context_db
+from fairyclaw.sdk.tools import ToolContext, get_context_db
 
 async def execute(args: Dict[str, Any], context: ToolContext) -> str:
     """Read text content of a session-scoped file by file ID.

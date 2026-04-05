@@ -3,8 +3,7 @@
 import os
 from typing import Any, Dict
 
-from fairyclaw.config import settings
-from fairyclaw.core.capabilities.models import ToolContext, get_context_db, resolve_safe_path
+from fairyclaw.sdk.tools import ToolContext, get_context_db, resolve_safe_path
 from fairyclaw.infrastructure.database.repository import FileRepository
 
 async def execute(args: Dict[str, Any], context: ToolContext) -> str:
@@ -34,7 +33,7 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
         
     if not target_path:
         target_path = os.getcwd()
-    root_dir = settings.filesystem_root_dir
+    root_dir = context.filesystem_root_dir
 
     db, error = get_context_db(context)
     if error:

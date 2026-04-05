@@ -36,7 +36,8 @@ fairyclaw/capabilities/
 │       └── ...
 ├── your_new_group/       ← add yours here
 │   ├── manifest.json
-│   ├── config.yaml       (optional)
+│   ├── config.py         (optional — define runtime_config_model here)
+│   ├── config.yaml       (optional — large/structured static config)
 │   └── scripts/
 │       └── your_tool.py
 ```
@@ -85,26 +86,75 @@ A minimal manifest with one Tool and one Hook:
 
 See [`fairyclaw/capabilities/agent_tools/manifest.json`](fairyclaw/capabilities/agent_tools/manifest.json) for a full Tool example and [`fairyclaw/capabilities/runtime_event_hooks/manifest.json`](fairyclaw/capabilities/runtime_event_hooks/manifest.json) for how to declare custom `event_types` hooks.
 
+### Imports: always use `fairyclaw.sdk`
+
+Capability scripts must import from `fairyclaw.sdk.*` rather than directly from `fairyclaw.core.*`.  The SDK is the stable, versioned public surface for group code.
+
+```python
+from fairyclaw.sdk.tools import ToolContext, resolve_safe_path
+from fairyclaw.sdk.hooks import HookStageInput, HookStageOutput, HookStatus
+from fairyclaw.sdk.subtasks import get_or_create_subtask_state
+from fairyclaw.sdk.runtime import publish_user_message_received, request_planner_wakeup
+from fairyclaw.sdk.events import EventType
+```
+
+Direct imports like `from fairyclaw.core.capabilities.models import ToolContext` are discouraged in group scripts and will be flagged in code review.
+
+### Group runtime configuration
+
+If your group needs runtime parameters (timeouts, proxy URLs, model names, etc.), define a frozen Pydantic model in `config.py` and expose it as `runtime_config_model`.  The registry loads it once at startup and injects it into `ToolContext.group_runtime_config`.
+
+```python
+# fairyclaw/capabilities/my_group/config.py
+from pydantic import BaseModel
+
+class MyGroupRuntimeConfig(BaseModel):
+    model_config = {"frozen": True}
+    my_timeout_seconds: int = 30
+    my_api_key: str | None = None
+
+runtime_config_model = MyGroupRuntimeConfig
+```
+
+In scripts, retrieve the snapshot with `expect_group_config`:
+
+```python
+from fairyclaw.sdk.group_runtime import expect_group_config
+from fairyclaw.capabilities.my_group.config import MyGroupRuntimeConfig
+
+async def execute(args, context: ToolContext) -> str:
+    cfg = expect_group_config(context, MyGroupRuntimeConfig)
+    timeout = cfg.my_timeout_seconds
+```
+
+Configure group-specific values in `config/fairyclaw.env` using the `FAIRYCLAW_CAP_<GROUP>__<FIELD>` prefix (double underscore):
+
+```
+FAIRYCLAW_CAP_MY_GROUP__MY_TIMEOUT_SECONDS=60
+FAIRYCLAW_CAP_MY_GROUP__MY_API_KEY=sk-...
+```
+
+**Do not** import or read `fairyclaw.config.settings` from capability scripts for group-specific parameters.  Process-level values (e.g. `filesystem_root_dir`) are injected into `ToolContext` directly and accessible as `context.filesystem_root_dir`.
+
 ### Tool scripts
 
-A Tool script receives a JSON context object from stdin and writes a result to stdout:
+Tool scripts export an `async def execute(args: dict, context: ToolContext) -> str` function:
 
 ```python
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 FairyClaw contributors
 
-import json, sys
+from typing import Any, Dict
+from fairyclaw.sdk.tools import ToolContext
 
-context = json.load(sys.stdin)
-params = context["parameters"]
-
-result = do_something(params["input"])
-print(json.dumps({"result": result}))
+async def execute(args: Dict[str, Any], context: ToolContext) -> str:
+    result = do_something(args["input"])
+    return result
 ```
 
 ### Hook scripts
 
-Hooks intercept the five agent lifecycle stages. The canonical hook boundary types live in [`fairyclaw/core/agent/hooks/protocol.py`](fairyclaw/core/agent/hooks/protocol.py).
+Hooks intercept the five agent lifecycle stages. Import hook types from `fairyclaw.sdk.hooks`.
 
 **Five stages and their payload types:**
 
@@ -130,7 +180,7 @@ A minimal hook entry point:
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 FairyClaw contributors
 
-from fairyclaw.core.agent.hooks.protocol import (
+from fairyclaw.sdk.hooks import (
     HookStageInput,
     HookStageOutput,
     HookStatus,

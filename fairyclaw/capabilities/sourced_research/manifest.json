@@ -1,6 +1,6 @@
 {
   "name": "SourcedResearch",
-  "description": "Structured research workflow that produces verifiable, citation-backed answers. Use when the task explicitly requires traceable sources that the user can check — e.g. fact-checking, literature surveys, or any answer where fabricated references are unacceptable. Provides a three-step pipeline: search → extract excerpt → format with citations.",
+  "description": "Structured research workflow that produces verifiable, citation-backed answers. Use when the task explicitly requires traceable sources that the user can check — e.g. fact-checking, literature surveys, or any answer where fabricated references are unacceptable. Provides a three-step pipeline: search → extract excerpt → format with citations. If you choose this, don't choose WebTools.",
   "always_enable_planner": false,
   "always_enable_subagent": false,
   "capabilities": [

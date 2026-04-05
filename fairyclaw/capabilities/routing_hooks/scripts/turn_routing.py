@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 
-from fairyclaw.core.agent.hooks.protocol import (
+from fairyclaw.sdk.hooks import (
     AfterLlmResponseHookPayload,
     HookStageInput,
     HookStageOutput,

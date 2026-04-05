@@ -13,6 +13,16 @@
 | `interfaces/` | 协议与抽象接口 | 当前仅保留 `MemoryProvider`，其余未接线 ABC 已移除 |
 | root (`constants.py`, `types.py`) | 跨层通用常量与轻量类型 | 根目录不再保留 shim/re-export；实现以子包为唯一来源 |
 
+## SDK Dependency Direction
+
+`fairyclaw.sdk` sits **between** capability scripts and `fairyclaw.core`:
+
+- `fairyclaw/capabilities/<group>/scripts/*.py` → `fairyclaw.sdk.*`
+- `fairyclaw.sdk.*` → `fairyclaw.core.*`
+- `fairyclaw.sdk` **never** imports from `fairyclaw.capabilities`
+
+`CapabilityRegistry` loads group config models from `<group>/config.py` (looking for `runtime_config_model`) and calls `fairyclaw.sdk.group_runtime.load_group_runtime_config` at startup.  The resulting frozen snapshot is stored on `CapabilityGroup.runtime_config` and injected into `ToolContext.group_runtime_config` by `fairyclaw.tools.runtime.ToolRuntime` when executing tools.
+
 ## Dependency Direction
 
 - `planning -> context/hooks/executors/session/routing`

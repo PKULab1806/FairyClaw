@@ -59,6 +59,8 @@ openssl rand -hex 32
 
 ### 2.2 Business settings
 
+**Core process variables** (managed by `fairyclaw.config.Settings`):
+
 | Variable | Default | Description |
 |---|---|---|
 | `FAIRYCLAW_HOST` | `0.0.0.0` | Business bind address. |
@@ -73,6 +75,18 @@ openssl rand -hex 32
 | `FAIRYCLAW_ENABLE_HOOK_RUNTIME` | `false` | Enable the five-stage Hook pipeline for capabilities. |
 | `FAIRYCLAW_CONTEXT_TOKEN_BUDGET` | `0` | Token budget for context compression hooks (0 = disabled). |
 | `FAIRYCLAW_BRIDGE_WS_PATH` | `/internal/gateway/ws` | WebSocket path Business listens on for Gateway connections. |
+
+**Capability group variables** (managed by `fairyclaw.sdk.group_runtime`):
+
+These use the `FAIRYCLAW_CAP_<GROUP>__<FIELD>` prefix (double underscore).  They are loaded once at startup into per-group frozen config snapshots and injected into `ToolContext.group_runtime_config` — capability scripts never import `settings` for these.
+
+| Variable | Default | Description |
+|---|---|---|
+| `FAIRYCLAW_CAP_CORE_OPS__EXECUTION_TIMEOUT_SECONDS` | `30` | Max runtime (seconds) for `run_command` and `execute_python`. |
+| `FAIRYCLAW_CAP_WEB_TOOLS__WEB_PROXY` | *(empty)* | HTTP proxy for `web_search`, `visit_page`, `download_file`. |
+| `FAIRYCLAW_CAP_SOURCED_RESEARCH__WEB_PROXY` | *(empty)* | HTTP proxy for sourced-research pipeline scripts. |
+
+During the **transition period**, the old flat keys (`FAIRYCLAW_EXECUTION_TIMEOUT_SECONDS`, `FAIRYCLAW_WEB_PROXY`) are still recognized by the group config loader for backward compatibility, but are deprecated.  Migrate to the new-style keys and remove the old ones from your `fairyclaw.env`.
 
 ### 2.3 Gateway settings
 

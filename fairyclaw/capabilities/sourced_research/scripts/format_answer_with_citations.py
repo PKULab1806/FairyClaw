@@ -6,7 +6,7 @@ import ast
 import json
 from typing import Any, Dict, List
 
-from fairyclaw.core.capabilities.models import ToolContext
+from fairyclaw.sdk.tools import ToolContext
 
 
 def _validate_citations(citations: List[Any]) -> List[str]:

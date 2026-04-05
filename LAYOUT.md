@@ -25,7 +25,7 @@ This document maps each directory to its responsibility and key files.
 fairyclaw/
 ├── main.py                  ← Business process: FastAPI app, startup/shutdown
 ├── config/
-│   └── settings.py          ← All env-driven configuration (FAIRYCLAW_* prefix)
+│   └── settings.py          ← Process-level configuration (FAIRYCLAW_* prefix); capability-specific params live in group config snapshots via fairyclaw.sdk.group_runtime
 ├── api/                     ← Business HTTP API (routers, schemas, dependencies)
 ├── bridge/                  ← WebSocket bridge server (Business side)
 │   ├── ws_server.py         ← WsBridgeServer: accepts Gateway connections
@@ -43,10 +43,32 @@ fairyclaw/
 │   │   ├── http_adapter.py
 │   │   └── onebot_adapter.py
 │   └── bridge/              ← WS bridge client (Gateway side)
+├── sdk/                     ← Stable import surface for capability scripts (see below)
 ├── capabilities/            ← Pluggable capability groups (extend here)
 ├── infrastructure/          ← DB, LLM client, embedding, files, tokenizer
 └── tools/                   ← Internal tool dispatch helpers
 ```
+
+---
+
+## `fairyclaw/sdk/`
+
+The stable public import surface for capability group scripts.  Capability scripts should import from here rather than directly from `fairyclaw.core`.
+
+| Module | Responsibility |
+|---|---|
+| `sdk.tools` | `ToolContext` (with `group_runtime_config` and `filesystem_root_dir`), `resolve_safe_path`, `get_context_db`, result/listing types. |
+| `sdk.ir` | `SessionMessageBlock`, `ToolCallRound`, `ChatHistoryItem`, `SessionMessageRole`, `UserTurn` — typed history IR. |
+| `sdk.hooks` | All hook boundary types: stage payloads, `HookStageInput/Output`, `HookStatus`, `EventHookHandler`. |
+| `sdk.runtime` | **Semantic API A** — `publish_user_message_received`, `request_planner_wakeup`; `publish_runtime_event` escape hatch; `deliver_file_to_user`. |
+| `sdk.subtasks` | **Semantic API B** — `bind_sub_session`, `get_or_create_subtask_state`, `is_sub_session_cancel_requested`, `request_cancel_subtask`, `clear_sub_session_cancel`. |
+| `sdk.events` | `EventType`, `WakeupReason`, typed event payload contracts (`FileUploadReceivedEventPayload`, etc.). |
+| `sdk.types` | `ContentSegment`, `SegmentType`, `SystemPromptPart`, `SUB_SESSION_MARKER`, `TaskType`. |
+| `sdk.group_runtime` | `load_group_runtime_config` — unified group config loader (env vars + optional YAML → frozen snapshot); `expect_group_config` — typed retrieval from `ToolContext`. |
+
+**Dependency direction**: `sdk.*` → `core.*`.  `sdk` never imports from `fairyclaw.capabilities`.
+
+**Group runtime config**: each capability group defines its own `BaseModel` (frozen) and exposes it as `runtime_config_model` in `config.py`.  The registry calls `load_group_runtime_config` once at startup and injects the snapshot into `ToolContext.group_runtime_config`.  Scripts call `expect_group_config(context, MyGroupConfig)` to retrieve it safely.
 
 ---
 

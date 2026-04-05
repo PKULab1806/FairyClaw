@@ -7,6 +7,7 @@ from typing import Any
 
 from fairyclaw.core.capabilities.registry import CapabilityRegistry
 from fairyclaw.core.capabilities.models import ToolContext
+from fairyclaw.config.settings import settings as _settings
 
 
 class ToolRuntime:
@@ -40,7 +41,18 @@ class ToolRuntime:
             except json.JSONDecodeError:
                 return "Error: Invalid JSON arguments."
 
-            context = ToolContext(session_id=session_id, memory=memory, planner=planner)
+            group_runtime_config: object | None = None
+            for group in self.registry.groups.values():
+                if any(t.name == tool_name for t in group.tools):
+                    group_runtime_config = group.runtime_config
+                    break
+            context = ToolContext(
+                session_id=session_id,
+                memory=memory,
+                planner=planner,
+                group_runtime_config=group_runtime_config,
+                filesystem_root_dir=_settings.filesystem_root_dir,
+            )
 
             try:
                 result = await tool_executor(arguments, context)

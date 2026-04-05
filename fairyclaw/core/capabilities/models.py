@@ -18,11 +18,16 @@ class ToolContext:
         session_id (str): Current session identifier.
         memory (Any): Memory service used by tools requiring persistence.
         planner (Any): Optional planner instance for advanced orchestration tools.
+        group_runtime_config (Any | None): Frozen group-specific runtime config
+            snapshot injected by the registry at load time.  Access via
+            ``fairyclaw.sdk.group_runtime.expect_group_config``.
     """
 
     session_id: str
     memory: Any
     planner: Any = None
+    group_runtime_config: Any = None
+    filesystem_root_dir: str | None = None
 
 
 @dataclass(frozen=True)
@@ -286,6 +291,7 @@ class CapabilityGroup(BaseModel):
     capabilities: List[Dict[str, Any]]
     hooks: List[Dict[str, Any]] = Field(default_factory=list)
     event_types: List[Dict[str, Any]] = Field(default_factory=list)
+    runtime_config: Any = Field(default=None, exclude=True)
     
     @property
     def tools(self) -> List[ToolCapability]:

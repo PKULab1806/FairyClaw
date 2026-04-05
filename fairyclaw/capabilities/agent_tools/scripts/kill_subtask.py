@@ -2,11 +2,11 @@
 # Copyright (c) 2026 FairyClaw contributors, PKU DS Lab
 from typing import Any, Dict
 
-from fairyclaw.core.agent.session.global_state import (
+from fairyclaw.sdk.subtasks import (
     get_or_create_subtask_state,
-    request_sub_session_cancel,
+    request_cancel_subtask,
 )
-from fairyclaw.core.capabilities.models import ToolContext
+from fairyclaw.sdk.tools import ToolContext
 
 async def execute(args: Dict[str, Any], context: ToolContext) -> str:
     """Cancel one running subtask by exact ID or unique prefix.
@@ -39,7 +39,7 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
         return f"Task {resolved_task_id} is not currently running. It may have already completed, failed, or the ID is invalid."
     if not record.status.startswith("running"):
         return f"Task {resolved_task_id} is not currently running. Current status: {record.status}."
-    request_sub_session_cancel(resolved_task_id)
+    request_cancel_subtask(resolved_task_id)
     state.mark_terminal(resolved_task_id, "cancelled", "Cancelled by user request.")
     if context.planner is not None:
         await context.planner._publish_subtask_barrier_if_ready(resolved_task_id)

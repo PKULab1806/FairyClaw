@@ -9,11 +9,9 @@ from urllib.parse import urlparse, unquote
 
 import httpx
 
-from fairyclaw.config.settings import settings
-from fairyclaw.core.capabilities.models import ToolContext, resolve_safe_path
-
-
-WEB_PROXY = settings.web_proxy or os.environ.get("FAIRYCLAW_WEB_PROXY", "")
+from fairyclaw.sdk.group_runtime import expect_group_config
+from fairyclaw.sdk.tools import ToolContext, resolve_safe_path
+from fairyclaw.capabilities.web_tools.config import WebToolsRuntimeConfig
 BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -230,11 +228,13 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         return "Error: only http/https URLs are supported."
-    root_dir = settings.filesystem_root_dir
+    cfg = expect_group_config(context, WebToolsRuntimeConfig)
+    root_dir = context.filesystem_root_dir
     if not root_dir:
         return "Error: FAIRYCLAW_FILESYSTEM_ROOT_DIR is not configured."
 
-    proxy_url = WEB_PROXY
+    raw_proxy = cfg.web_proxy or ""
+    proxy_url = raw_proxy
     if proxy_url and "://" not in proxy_url:
         proxy_url = f"http://{proxy_url}"
 

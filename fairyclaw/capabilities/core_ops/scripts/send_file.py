@@ -3,9 +3,8 @@
 import os
 import mimetypes
 from typing import Any, Dict
-from fairyclaw.core.capabilities.models import ToolContext, resolve_safe_path
-from fairyclaw.config import settings
-from fairyclaw.core.events.runtime import deliver_file_to_user
+from fairyclaw.sdk.runtime import deliver_file_to_user
+from fairyclaw.sdk.tools import ToolContext, resolve_safe_path
 from fairyclaw.infrastructure.database.session import get_db_session
 from fairyclaw.infrastructure.database.repository import FileRepository
 
@@ -34,7 +33,7 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
     if not file_path:
         return "Error: file_path is required."
 
-    root_dir = settings.filesystem_root_dir
+    root_dir = context.filesystem_root_dir
     safe_path, error = resolve_safe_path(file_path, root_dir)
     if error or safe_path is None:
         return error or "Error: Invalid path."

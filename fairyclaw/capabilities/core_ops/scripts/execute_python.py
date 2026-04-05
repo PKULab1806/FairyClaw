@@ -3,9 +3,10 @@
 import asyncio
 from dataclasses import dataclass
 from typing import Any, Dict
-from fairyclaw.core.capabilities.models import ToolContext
-from fairyclaw.config import settings
-from fairyclaw.core.agent.session.global_state import is_sub_session_cancel_requested
+from fairyclaw.sdk.group_runtime import expect_group_config
+from fairyclaw.sdk.subtasks import is_sub_session_cancel_requested
+from fairyclaw.sdk.tools import ToolContext
+from fairyclaw.capabilities.core_ops.config import CoreOpsRuntimeConfig
 
 @dataclass
 class RunResult:
@@ -17,7 +18,7 @@ class RunResult:
 class LocalPythonExecutor:
     """Execute ad-hoc Python snippets in local subprocess."""
 
-    async def execute(self, session_id: str, code: str) -> RunResult:
+    async def execute(self, session_id: str, code: str, timeout: int = 30) -> RunResult:
         """Execute Python code using `python3 -c` and capture outputs.
 
         Args:
@@ -33,7 +34,6 @@ class LocalPythonExecutor:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            timeout = settings.execution_timeout_seconds
             loop = asyncio.get_running_loop()
             deadline = loop.time() + float(timeout)
             while True:
@@ -92,7 +92,8 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
     if not code:
         return "Error: code is required."
         
-    result = await local_python_executor.execute(context.session_id, code)
+    cfg = expect_group_config(context, CoreOpsRuntimeConfig)
+    result = await local_python_executor.execute(context.session_id, code, timeout=cfg.execution_timeout_seconds)
     output = f"Exit Code: {result.exit_code}\nStdout:\n{result.stdout}"
     if result.stderr:
         output += f"\nStderr:\n{result.stderr}"

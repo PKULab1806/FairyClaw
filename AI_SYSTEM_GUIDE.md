@@ -215,6 +215,37 @@ Visibility is now enforced by capability fields and session scope, not prompt lu
 
 `CapabilityRegistry` calls `.resolve()` on script paths and loads scripts using "nearest implementation in group" semantics. The `SubAgentTools/report_subtask_done` script lives at `sub_agent_tools/scripts/`.
 
+## 6.7 Capability SDK and Group Runtime Configuration
+
+Capability group scripts must import from `fairyclaw.sdk.*` rather than directly from `fairyclaw.core.*`.  This provides a stable, versioned public surface and ensures that internal core refactors do not break group scripts.
+
+**Import surface:**
+
+| SDK module | What to import |
+|---|---|
+| `fairyclaw.sdk.tools` | `ToolContext`, `resolve_safe_path`, `get_context_db`, result types |
+| `fairyclaw.sdk.ir` | `SessionMessageBlock`, `ToolCallRound`, `ChatHistoryItem`, `UserTurn`, `SessionMessageRole` |
+| `fairyclaw.sdk.hooks` | All hook boundary types and stage payloads |
+| `fairyclaw.sdk.runtime` | `publish_user_message_received`, `request_planner_wakeup`, `publish_runtime_event`, `deliver_file_to_user` |
+| `fairyclaw.sdk.subtasks` | `bind_sub_session`, `get_or_create_subtask_state`, `is_sub_session_cancel_requested`, `request_cancel_subtask`, `clear_sub_session_cancel` |
+| `fairyclaw.sdk.events` | `EventType`, `WakeupReason`, typed event payload contracts |
+| `fairyclaw.sdk.types` | `ContentSegment`, `SystemPromptPart`, `SUB_SESSION_MARKER`, `TaskType` |
+| `fairyclaw.sdk.group_runtime` | `load_group_runtime_config`, `expect_group_config` |
+
+**Group runtime configuration:**
+
+- Each capability group may declare a frozen Pydantic `BaseModel` as `runtime_config_model` in `config.py`.
+- `CapabilityRegistry._load_group_runtime_config` discovers this model at group load time and calls `fairyclaw.sdk.group_runtime.load_group_runtime_config` to materialise a frozen snapshot.
+- The snapshot is stored on `CapabilityGroup.runtime_config` and injected into `ToolContext.group_runtime_config` when building the execution context.
+- Inside tool scripts, call `expect_group_config(context, MyGroupConfig)` to retrieve the typed snapshot.
+- Environment variable naming: `FAIRYCLAW_CAP_<GROUP>__<FIELD>` (double underscore, group name uppercased).  Deprecated flat keys (`FAIRYCLAW_WEB_PROXY`, `FAIRYCLAW_EXECUTION_TIMEOUT_SECONDS`) are recognized during the transition period.
+- **Prohibited in group scripts**: `from fairyclaw.config.settings import settings` for group-specific values.  Process-level values like `filesystem_root_dir` are injected into `ToolContext.filesystem_root_dir` by `ToolRuntime` and should be read from context.
+
+**Semantic APIs A and B:**
+
+- **A (Runtime/Wakeup):** `publish_user_message_received(session_id, ...)` and `request_planner_wakeup(session_id, ...)` abstract the raw event payload construction.  Use these in preference to calling `publish_runtime_event` directly.
+- **B (Subtasks):** `bind_sub_session`, `get_or_create_subtask_state`, `is_sub_session_cancel_requested`, `request_cancel_subtask`, `clear_sub_session_cancel` are thin forwarding aliases over `core.agent.session.global_state` with SDK-conventional names.
+
 ## 7. Typed History / IR Layers
 
 The system maintains three layers of conversation data:

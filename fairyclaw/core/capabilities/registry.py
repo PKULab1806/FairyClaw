@@ -67,6 +67,7 @@ class CapabilityRegistry:
                             manifest_data = json.load(f)
                         
                         group = CapabilityGroup(**manifest_data)
+                        group.runtime_config = self._load_group_runtime_config(group.name, group_dir)
                         self.groups[group.name] = group
                         
                         # Register Tools
@@ -87,6 +88,63 @@ class CapabilityRegistry:
                             
                     except Exception as e:
                         logger.error(f"Error loading capabilities from {group_dir}: {e}")
+
+    def _load_group_runtime_config(self, group_name: str, group_dir: Path) -> object | None:
+        """Load frozen group runtime config snapshot if the group declares one.
+
+        Looks for a ``runtime_config_model`` attribute in the group's
+        ``__init__.py`` or ``config.py``.  If neither exists or the attribute
+        is absent, returns ``None`` (no config injection for that group).
+
+        Args:
+            group_name: Capability group name.
+            group_dir: Absolute path to the group directory.
+
+        Returns:
+            Frozen ``BaseModel`` instance or ``None``.
+        """
+        from fairyclaw.sdk.group_runtime import load_group_runtime_config
+
+        for candidate in ("config.py", "__init__.py"):
+            mod_path = group_dir / candidate
+            if not mod_path.exists():
+                continue
+            try:
+                # Use the canonical package path derived from the *directory*
+                # name (not the manifest's group_name, which may use a
+                # different casing/convention).  This ensures that dynamic
+                # loading and a normal
+                #   `from fairyclaw.capabilities.<dir>.config import ...`
+                # share the same sys.modules entry and therefore the same
+                # class objects.  Without this, isinstance() fails with the
+                # confusing "expected Foo, got Foo" message.
+                mod_stem = candidate[:-3]  # "config" or "__init__"
+                dir_name = group_dir.name  # e.g. "sourced_research", not "SourcedResearch"
+                module_name = f"fairyclaw.capabilities.{dir_name}.{mod_stem}"
+                if module_name in sys.modules:
+                    module = sys.modules[module_name]
+                else:
+                    spec = importlib.util.spec_from_file_location(module_name, mod_path)
+                    if not (spec and spec.loader):
+                        continue
+                    module = importlib.util.module_from_spec(spec)
+                    sys.modules[module_name] = module
+                    spec.loader.exec_module(module)
+                model_cls = getattr(module, "runtime_config_model", None)
+                if model_cls is not None:
+                    return load_group_runtime_config(
+                        group_name=dir_name,
+                        group_dir=group_dir,
+                        model=model_cls,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "group_runtime: could not load config model for group=%s from %s: %s",
+                    group_name,
+                    mod_path,
+                    exc,
+                )
+        return None
 
     def _load_tool_executor(self, tool_name: str, script_path: Path):
         """Dynamically load execute() function from tool script.

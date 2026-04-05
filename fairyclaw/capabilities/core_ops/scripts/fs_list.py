@@ -3,8 +3,7 @@
 import os
 import json
 from typing import Any, Dict
-from fairyclaw.core.capabilities.models import ToolContext, FileSystemListItem, resolve_safe_path
-from fairyclaw.config import settings
+from fairyclaw.sdk.tools import ToolContext, FileSystemListItem, resolve_safe_path
 
 async def execute(args: Dict[str, Any], context: ToolContext) -> str:
     """List directory entries under allowed filesystem root.
@@ -28,7 +27,7 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
     dir_path = args.get("dir_path")
     
     # 1. Resolve Path
-    root_dir = settings.filesystem_root_dir
+    root_dir = context.filesystem_root_dir
     resolved_dir_path = str(dir_path) if isinstance(dir_path, str) and dir_path else str(root_dir or "")
 
     safe_path, error = resolve_safe_path(resolved_dir_path, root_dir)
