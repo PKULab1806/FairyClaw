@@ -1,13 +1,11 @@
 budgets:
-  # Global budget config used by Reins budget engine.
-  # NOTE: current Reins implementation may treat balances as daily period
-  # internally; FAIRYCLAW_REINS_BUDGET_MONTHLY_USD still controls total cap.
-  monthly: $100.00
-  on_exceed: degrade
+  # Global daily budget config used by Reins budget engine.
+  daily: $100.00
+  on_exceed: reject
   agents:
     fairyclaw_runtime:
-      monthly: $100.00
-      on_exceed: degrade
+      daily: $100.00
+      on_exceed: reject
 
 modules:
   budget:

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 FairyClaw contributors, PKU DS Lab
-"""Tests for get_context_db unwrapping memory wrappers (e.g. BridgeOutputMemory)."""
+"""Tests for get_context_db resolving PersistentMemory.repo.db."""
 
 from fairyclaw.core.capabilities.models import ToolContext, get_context_db
 

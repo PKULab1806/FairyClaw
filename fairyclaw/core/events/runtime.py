@@ -11,12 +11,18 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 
+from typing import TYPE_CHECKING
+
 from fairyclaw.core.agent.hooks.protocol import JsonObject
 from fairyclaw.core.events.bus import RuntimeEvent, RuntimeEventType, SessionEventBus, event_type_value
+
+if TYPE_CHECKING:
+    from fairyclaw.bridge.user_gateway import UserGateway
 
 logger = logging.getLogger(__name__)
 _runtime_bus: SessionEventBus | None = None
 _file_delivery: Callable[[str, str], Awaitable[None]] | None = None
+_user_gateway: UserGateway | None = None
 
 
 def set_runtime_bus(bus: SessionEventBus) -> None:
@@ -39,6 +45,17 @@ def get_runtime_bus() -> SessionEventBus | None:
         SessionEventBus | None: Registered bus instance or None.
     """
     return _runtime_bus
+
+
+def set_user_gateway(gw: UserGateway | None) -> None:
+    """Register the business-side UserGateway (bridge + user channel)."""
+    global _user_gateway
+    _user_gateway = gw
+
+
+def get_user_gateway() -> UserGateway | None:
+    """Return the registered UserGateway, if any."""
+    return _user_gateway
 
 
 def set_file_delivery(fn: Callable[[str, str], Awaitable[None]] | None) -> None:

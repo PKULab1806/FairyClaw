@@ -2,13 +2,15 @@
 # Copyright (c) 2026 FairyClaw contributors, PKU DS Lab
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
-from fairyclaw.bridge.ws_server import WsBridgeServer
+from fairyclaw.bridge.user_gateway import UserGateway
 
 
-def test_ws_bridge_server_delivers_sub_session_file_via_parent_route(monkeypatch) -> None:
+def test_user_gateway_delivers_sub_session_file_via_parent_route(monkeypatch) -> None:
     async def scenario() -> None:
-        server = WsBridgeServer()
+        bus = MagicMock()
+        gateway = UserGateway(bus=bus)
         published: list[tuple[str, dict[str, str]]] = []
 
         async def fake_push_outbound(message) -> None:
@@ -37,12 +39,12 @@ def test_ws_bridge_server_delivers_sub_session_file_via_parent_route(monkeypatch
                 assert (file_id, source_session_id, target_session_id) == ("file_sub", "sess_sub_1", "sess_main")
                 return SimpleNamespace(id="file_parent")
 
-        monkeypatch.setattr("fairyclaw.bridge.ws_server.AsyncSessionLocal", FakeSessionLocal)
-        monkeypatch.setattr("fairyclaw.bridge.ws_server.GatewaySessionRouteRepository", FakeRouteRepo)
-        monkeypatch.setattr("fairyclaw.bridge.ws_server.FileRepository", FakeFileRepo)
-        server.push_outbound = fake_push_outbound  # type: ignore[method-assign]
+        monkeypatch.setattr("fairyclaw.bridge.user_gateway.AsyncSessionLocal", FakeSessionLocal)
+        monkeypatch.setattr("fairyclaw.bridge.user_gateway.GatewaySessionRouteRepository", FakeRouteRepo)
+        monkeypatch.setattr("fairyclaw.bridge.user_gateway.FileRepository", FakeFileRepo)
+        gateway.push_outbound = fake_push_outbound  # type: ignore[method-assign]
 
-        await server.deliver_file_to_user("sess_sub_1", "file_sub")
+        await gateway.emit_file("sess_sub_1", "file_sub")
 
         assert published == [("sess_main", {"file_id": "file_parent"})]
 

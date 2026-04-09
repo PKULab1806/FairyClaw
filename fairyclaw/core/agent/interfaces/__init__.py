@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 FairyClaw contributors, PKU DS Lab
-"""Agent interface abstractions."""
+"""Agent interface exports."""
 
-from .memory_provider import MemoryProvider
+from fairyclaw.core.agent.session.memory import CompactionSnapshot
 
-__all__ = ["MemoryProvider"]
-
+__all__ = ["CompactionSnapshot"]

@@ -9,6 +9,9 @@ from fairyclaw.sdk.subtasks import (
     get_or_create_subtask_state,
 )
 from fairyclaw.sdk.tools import ToolContext
+from fairyclaw.core.events.runtime import get_user_gateway
+from fairyclaw.infrastructure.database.models import SessionModel
+from fairyclaw.infrastructure.database.session import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +55,20 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
     if not changed:
         return f"Sub-task {sub_session_id} already in terminal state."
     clear_sub_session_cancel(sub_session_id)
+    try:
+        async with AsyncSessionLocal() as db:
+            sub_session = await db.get(SessionModel, sub_session_id)
+            if sub_session and isinstance(sub_session.meta, dict):
+                meta = dict(sub_session.meta)
+                meta["subtask_status"] = status
+                sub_session.meta = meta
+                await db.commit()
+    except Exception:
+        # Best-effort persistence; runtime state still updated.
+        pass
+    uwg = get_user_gateway()
+    if uwg is not None:
+        await uwg.emit_subagent_tasks_snapshot(main_session_id)
     if context.planner is not None:
         await context.planner._publish_subtask_barrier_if_ready(sub_session_id)
     logger.info(f"Sub-agent returned: main_session={main_session_id}, sub_session={sub_session_id}, status={status}")

@@ -1,0 +1,123 @@
+.settings-page {
+  padding: 24px 28px 40px;
+  max-width: 960px;
+}
+
+.settings-page__title {
+  margin: 0 0 8px;
+  font-size: 1.35rem;
+}
+
+.settings-page__subtitle {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.settings-page__hint {
+  margin: 0 0 12px;
+  color: var(--color-text-muted);
+  line-height: 1.5;
+}
+
+.settings-page__origin {
+  margin: 0 0 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.875rem;
+}
+
+.settings-page__origin-label {
+  color: var(--color-text-muted);
+}
+
+.settings-page__origin-value {
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--color-bg-muted);
+  border: 1px solid var(--color-border);
+  font-size: 0.8rem;
+}
+
+.settings-page__token-hint,
+.settings-page__token-server {
+  margin: 0 0 8px;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  line-height: 1.45;
+}
+
+.settings-page__error {
+  color: #b91c1c;
+  font-size: 0.875rem;
+}
+
+.settings-page__ok {
+  color: #15803d;
+  font-size: 0.875rem;
+}
+
+.settings-env-card {
+  margin-top: 20px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 18px;
+}
+
+.settings-env-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+  max-height: min(60vh, 520px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.settings-env-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-env-field__label {
+  font-size: 0.72rem;
+  font-family: ui-monospace, monospace;
+  color: var(--color-text-muted);
+  word-break: break-all;
+}
+
+.settings-env-field__input {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 0.85rem;
+  background: var(--color-bg-surface);
+  color: var(--color-text);
+}
+
+.settings-env-save {
+  margin-top: 4px;
+}
+
+.btn {
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+}
+
+.btn--primary {
+  background: var(--color-primary, #2563eb);
+  color: #fff;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

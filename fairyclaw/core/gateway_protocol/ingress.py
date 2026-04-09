@@ -8,8 +8,7 @@ from typing import Any
 
 from fairyclaw.core.agent.context.history_ir import SessionMessageBlock, SessionMessageRole
 from fairyclaw.core.agent.session.memory import PersistentMemory
-from fairyclaw.core.events.bus import EventType
-from fairyclaw.core.events.runtime import publish_runtime_event
+from fairyclaw.core.events.bus import EventType, RuntimeEvent, SessionEventBus
 from fairyclaw.core.domain import ContentSegment, SegmentType
 from fairyclaw.core.gateway_protocol.models import GatewayInboundMessage
 from fairyclaw.infrastructure.database.repository import EventRepository, FileRepository, SessionRepository
@@ -81,7 +80,7 @@ class GatewayIngressService:
             )
             return model.id
 
-    async def submit_message(self, message: GatewayInboundMessage) -> None:
+    async def submit_message(self, message: GatewayInboundMessage, *, bus: SessionEventBus) -> None:
         """Persist inbound message and publish follow-up runtime event when required."""
         async with AsyncSessionLocal() as db:
             session_repo = SessionRepository(db)
@@ -109,15 +108,17 @@ class GatewayIngressService:
                 )
 
         if message.trigger_turn:
-            await publish_runtime_event(
-                event_type=EventType.USER_MESSAGE_RECEIVED,
-                session_id=message.session_id,
-                payload={
-                    "trigger_turn": True,
-                    "task_type": message.task_type,
-                    "enabled_groups": list(message.enabled_groups) if message.enabled_groups is not None else None,
-                    "gateway_message_id": str(message.meta.get("message_id") or ""),
-                    "adapter_key": message.adapter_key,
-                },
-                source=f"gateway:{message.adapter_key}",
+            await bus.publish(
+                RuntimeEvent(
+                    type=EventType.USER_MESSAGE_RECEIVED,
+                    session_id=message.session_id,
+                    payload={
+                        "trigger_turn": True,
+                        "task_type": message.task_type,
+                        "enabled_groups": list(message.enabled_groups) if message.enabled_groups is not None else None,
+                        "gateway_message_id": str(message.meta.get("message_id") or ""),
+                        "adapter_key": message.adapter_key,
+                    },
+                    source=f"gateway:{message.adapter_key}",
+                )
             )

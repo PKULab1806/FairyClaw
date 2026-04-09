@@ -1,81 +1,78 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 FairyClaw contributors, PKU DS Lab
+"""Tests for UserGateway outbound emits (replaces BridgeOutputMemory)."""
+
 import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
-from fairyclaw.bridge.bridge_memory import BridgeOutputMemory
+import pytest
+
 from fairyclaw.core.agent.context.history_ir import SessionMessageBlock, SessionMessageRole, ToolCallRound
-from fairyclaw.core.agent.interfaces.memory_provider import MemoryProvider
 from fairyclaw.core.domain import ContentSegment
+from fairyclaw.core.gateway_protocol.models import OUTBOUND_KIND_EVENT, OUTBOUND_KIND_TEXT
+from fairyclaw.core.agent.session.memory import PersistentMemory
 
 
-class FakeMemory(MemoryProvider):
-    def __init__(self) -> None:
-        self.session_events: list[tuple[str, str]] = []
-        self.operation_events: list[ToolCallRound] = []
-
-    async def get_history(self, session_id: str, limit: int = 50) -> list:
-        return []
-
-    async def add_session_event(self, session_id: str, message) -> None:
-        self.session_events.append((session_id, message.as_plain_text()))
-
-    async def add_operation_event(self, session_id: str, tool_round: ToolCallRound) -> None:
-        self.operation_events.append(tool_round)
-
-
-def test_bridge_output_memory_pushes_main_session_text_and_redacts_send_file() -> None:
+def test_user_gateway_emit_assistant_and_tool_result(monkeypatch: pytest.MonkeyPatch) -> None:
     async def scenario() -> None:
-        base = FakeMemory()
-        pushed: list[tuple[str, dict[str, str]]] = []
+        from fairyclaw.bridge import user_gateway as ug_mod
 
-        async def push_outbound(message) -> None:
-            pushed.append((message.session_id, dict(message.content)))
+        pushed: list = []
 
-        memory = BridgeOutputMemory(base=base, push_outbound=push_outbound)
+        async def capture(msg: object) -> None:
+            pushed.append(msg)
+
+        gw = ug_mod.UserGateway(bus=MagicMock())
+        monkeypatch.setattr(gw, "push_outbound", capture)
+
         assistant_message = SessionMessageBlock.from_segments(
             SessionMessageRole.ASSISTANT,
             (ContentSegment.text_segment("hello"),),
         )
         assert assistant_message is not None
 
-        await memory.add_session_event("sess_main", assistant_message)
-        await memory.add_operation_event(
-            "sess_main",
-            ToolCallRound(
-                tool_name="send_file",
-                call_id="call_1",
-                arguments_json='{"file_path":"/tmp/demo.txt"}',
-                tool_result='{"status":"sent","file_id":"file_1"}',
-            ),
-        )
+        base = MagicMock(spec=PersistentMemory)
+        base.add_session_event = AsyncMock()
+        await base.add_session_event("sess_main", assistant_message)
+        await gw.emit_assistant_text("sess_main", "hello")
 
-        assert base.session_events == [("sess_main", "hello")]
-        assert pushed == [("sess_main", {"text": "hello"})]
-        persisted = base.operation_events[0]
-        assert persisted.arguments_json == '{"file_path":"(omitted)"}'
-        assert persisted.tool_result == "File sent to user."
+        tr = ToolCallRound(
+            tool_name="send_file",
+            call_id="call_1",
+            arguments_json='{"file_path":"/srv/project/out.txt"}',
+            tool_result="File sent to user.",
+            success=True,
+        )
+        await gw.emit_tool_result("sess_main", tr)
+
+        assert len(pushed) == 2
+        assert pushed[0].kind == OUTBOUND_KIND_TEXT
+        assert pushed[0].content.get("text") == "hello"
+        assert pushed[1].kind == OUTBOUND_KIND_EVENT
+        assert pushed[1].content.get("event_type") == "tool_result"
 
     asyncio.run(scenario())
 
 
-def test_bridge_output_memory_skips_sub_session_text_push() -> None:
+def test_user_gateway_skips_sub_session_assistant_emit(monkeypatch: pytest.MonkeyPatch) -> None:
     async def scenario() -> None:
-        base = FakeMemory()
-        pushed: list[tuple[str, dict[str, str]]] = []
+        from fairyclaw.bridge import user_gateway as ug_mod
 
-        async def push_outbound(message) -> None:
-            pushed.append((message.session_id, dict(message.content)))
+        pushed: list = []
 
-        memory = BridgeOutputMemory(base=base, push_outbound=push_outbound)
+        async def capture(msg: object) -> None:
+            pushed.append(msg)
+
+        gw = ug_mod.UserGateway(bus=MagicMock())
+        monkeypatch.setattr(gw, "push_outbound", capture)
+
         assistant_message = SessionMessageBlock.from_segments(
             SessionMessageRole.ASSISTANT,
             (ContentSegment.text_segment("sub reply"),),
         )
         assert assistant_message is not None
+        await gw.emit_assistant_text("sess_sub_1", "sub reply")
 
-        await memory.add_session_event("sess_sub_1", assistant_message)
-
-        assert base.session_events == [("sess_sub_1", "sub reply")]
         assert pushed == []
 
     asyncio.run(scenario())

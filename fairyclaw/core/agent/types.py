@@ -9,7 +9,7 @@ from enum import Enum
 
 from fairyclaw.core.agent.constants import TaskType
 from fairyclaw.core.agent.context.history_ir import ChatHistoryItem
-from fairyclaw.core.agent.interfaces.memory_provider import MemoryProvider
+from fairyclaw.core.agent.session.memory import PersistentMemory
 from fairyclaw.core.domain import ContentSegment
 
 
@@ -35,7 +35,7 @@ class TurnRequest:
     session_id: str
     user_segments: tuple[ContentSegment, ...]
     history_items: tuple[ChatHistoryItem, ...] = ()
-    memory: MemoryProvider | None = None
+    memory: PersistentMemory | None = None
     runtime: TurnRuntimePrefs = TurnRuntimePrefs()
     session_kind: SessionKind | None = None
 

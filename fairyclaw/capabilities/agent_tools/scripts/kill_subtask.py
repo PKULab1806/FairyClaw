@@ -7,6 +7,9 @@ from fairyclaw.sdk.subtasks import (
     request_cancel_subtask,
 )
 from fairyclaw.sdk.tools import ToolContext
+from fairyclaw.core.events.runtime import get_user_gateway
+from fairyclaw.infrastructure.database.models import SessionModel
+from fairyclaw.infrastructure.database.session import AsyncSessionLocal
 
 async def execute(args: Dict[str, Any], context: ToolContext) -> str:
     """Cancel one running subtask by exact ID or unique prefix.
@@ -41,6 +44,20 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
         return f"Task {resolved_task_id} is not currently running. Current status: {record.status}."
     request_cancel_subtask(resolved_task_id)
     state.mark_terminal(resolved_task_id, "cancelled", "Cancelled by user request.")
+    try:
+        async with AsyncSessionLocal() as db:
+            sub_session = await db.get(SessionModel, resolved_task_id)
+            if sub_session and isinstance(sub_session.meta, dict):
+                meta = dict(sub_session.meta)
+                meta["subtask_status"] = "cancelled"
+                sub_session.meta = meta
+                await db.commit()
+    except Exception:
+        # Best-effort persistence; runtime state still updated.
+        pass
+    uwg = get_user_gateway()
+    if uwg is not None:
+        await uwg.emit_subagent_tasks_snapshot(main_session_id)
     if context.planner is not None:
         await context.planner._publish_subtask_barrier_if_ready(resolved_task_id)
     remaining = state.active_count()

@@ -9,7 +9,11 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from fairyclaw.core.gateway_protocol.models import GatewayInboundMessage, GatewayOutboundMessage
+from fairyclaw.core.gateway_protocol.models import (
+    GatewayInboundMessage,
+    GatewayOutboundMessage,
+    OUTBOUND_BROADCAST_SESSION_ID,
+)
 from fairyclaw.gateway.bridge.ws_client import WsBridgeClient
 from fairyclaw.gateway.route_store import GatewaySessionRouteStore
 
@@ -96,9 +100,26 @@ class GatewayRuntime:
     async def download_file(self, *, session_id: str, file_id: str) -> tuple[bytes, str | None, str | None]:
         return await self.bridge.download_file(session_id=session_id, file_id=file_id)
 
-    async def dispatch_outbound(self, outbound: GatewayOutboundMessage) -> None:
+    async def resolve_outbound_route(self, outbound: GatewayOutboundMessage) -> tuple[str, dict[str, Any]]:
+        """Resolve adapter + sender from DB, or fall back to fields on the outbound frame (split gateway DB)."""
         try:
-            adapter_key, _sender_ref = await self.route_store.resolve(outbound.session_id)
+            return await self.route_store.resolve(outbound.session_id)
+        except ValueError:
+            ak = outbound.adapter_key
+            if ak:
+                return ak, dict(outbound.sender_ref or {})
+            raise ValueError(f"Missing gateway route for session: {outbound.session_id}")
+
+    async def dispatch_outbound(self, outbound: GatewayOutboundMessage) -> None:
+        if outbound.session_id == OUTBOUND_BROADCAST_SESSION_ID:
+            # adapter_key "http" is the persisted route id for the web UI (see WebGatewayAdapter).
+            web_ui = self.adapters.get("http")
+            if web_ui is None:
+                raise RuntimeError("Web UI adapter required for broadcast outbound")
+            await web_ui.send(outbound)
+            return
+        try:
+            adapter_key, _sender_ref = await self.resolve_outbound_route(outbound)
         except ValueError as exc:
             logger.error("Outbound route resolution failed: %s", exc)
             raise

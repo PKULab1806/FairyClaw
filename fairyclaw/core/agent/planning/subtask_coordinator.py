@@ -12,6 +12,7 @@ from fairyclaw.core.agent.session.memory import PersistentMemory
 from fairyclaw.core.domain import ContentSegment
 from fairyclaw.core.events.bus import EventType
 from fairyclaw.core.events.runtime import publish_runtime_event
+from fairyclaw.infrastructure.database.models import SessionModel
 from fairyclaw.infrastructure.database.repository import EventRepository
 from fairyclaw.infrastructure.database.session import AsyncSessionLocal
 
@@ -37,6 +38,21 @@ class SubtaskCoordinator:
         state = get_or_create_subtask_state(main_session_id)
         if not state.is_terminal(sub_session_id):
             state.mark_terminal(sub_session_id, status, summary)
+            try:
+                async with AsyncSessionLocal() as db:
+                    sub_session = await db.get(SessionModel, sub_session_id)
+                    if sub_session and isinstance(sub_session.meta, dict):
+                        meta = dict(sub_session.meta)
+                        meta["subtask_status"] = status.strip().lower() or "completed"
+                        sub_session.meta = meta
+                        await db.commit()
+            except Exception as exc:
+                logger.warning(
+                    "Failed to persist subtask terminal status. sub_session=%s status=%s err=%s",
+                    sub_session_id,
+                    status,
+                    exc,
+                )
 
     def lookup_subtask_status(self, sub_session_id: str) -> str | None:
         """Look up current status for one sub-session record."""

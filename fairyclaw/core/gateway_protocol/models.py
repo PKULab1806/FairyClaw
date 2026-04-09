@@ -13,7 +13,7 @@ from typing import Any
 
 from fairyclaw.core.domain import ContentSegment
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 FRAME_HELLO = "hello"
 FRAME_HELLO_ACK = "hello_ack"
@@ -43,6 +43,12 @@ OUTBOUND_KIND_TEXT = "text"
 OUTBOUND_KIND_FILE = "file"
 OUTBOUND_KIND_SEGMENTS = "segments"
 OUTBOUND_KIND_EVENT = "event"
+
+# Sentinel session_id for outbound events that must reach every connected web client (e.g. TelemetrySnapshot).
+OUTBOUND_BROADCAST_SESSION_ID = "__fc_broadcast__"
+
+FRAME_GATEWAY_CONTROL = "gateway_control"
+FRAME_GATEWAY_CONTROL_ACK = "gateway_control_ack"
 
 
 def now_ms() -> int:
@@ -319,14 +325,23 @@ class GatewayOutboundMessage:
     kind: str
     content: dict[str, Any]
     meta: dict[str, Any] = field(default_factory=dict)
+    # Optional routing hints: filled by the business bridge when the gateway DB has no row
+    # (e.g. split processes/databases) so the gateway can still dispatch and adapters can resolve senders.
+    adapter_key: str | None = None
+    sender_ref: dict[str, Any] | None = None
 
     def to_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "session_id": self.session_id,
             "kind": self.kind,
             "content": dict(self.content),
             "meta": dict(self.meta),
         }
+        if self.adapter_key is not None:
+            payload["adapter_key"] = self.adapter_key
+        if self.sender_ref is not None:
+            payload["sender_ref"] = dict(self.sender_ref)
+        return payload
 
     @classmethod
     def text(cls, session_id: str, text: str, meta: dict[str, Any] | None = None) -> "GatewayOutboundMessage":
@@ -352,12 +367,37 @@ class GatewayOutboundMessage:
         )
 
     @classmethod
+    def event(
+        cls,
+        session_id: str,
+        *,
+        event_type: str,
+        content: dict[str, Any],
+        meta: dict[str, Any] | None = None,
+    ) -> "GatewayOutboundMessage":
+        """Build one outbound event (telemetry, tool_call/tool_result, session list, etc.)."""
+        body = dict(content)
+        body["event_type"] = event_type
+        return cls(
+            session_id=session_id,
+            kind=OUTBOUND_KIND_EVENT,
+            content=body,
+            meta=dict(meta or {}),
+        )
+
+    @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "GatewayOutboundMessage":
+        ak_raw = payload.get("adapter_key")
+        adapter_key = str(ak_raw).strip() if isinstance(ak_raw, str) and str(ak_raw).strip() else None
+        sr_raw = payload.get("sender_ref")
+        sender_ref = dict(sr_raw) if isinstance(sr_raw, dict) else None
         return cls(
             session_id=str(payload.get("session_id") or ""),
             kind=str(payload.get("kind") or ""),
             content=payload.get("content") if isinstance(payload.get("content"), dict) else {},
             meta=payload.get("meta") if isinstance(payload.get("meta"), dict) else {},
+            adapter_key=adapter_key,
+            sender_ref=sender_ref,
         )
 
 

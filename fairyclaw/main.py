@@ -5,6 +5,7 @@
 Initialize web API, database, event bus, session scheduler, and watchdog.
 """
 
+import asyncio
 import logging
 
 from fastapi import FastAPI, HTTPException, Request
@@ -12,14 +13,16 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from fairyclaw.bridge.ws_server import WsBridgeServer, create_ws_bridge_router
+from fairyclaw.bridge.gateway_control import BusinessGatewayControl
+from fairyclaw.bridge.user_gateway import UserGateway, create_ws_bridge_router
+from fairyclaw.config.settings import settings
 from fairyclaw.core.agent.planning.planner import Planner
+from fairyclaw.core.gateway_protocol.control_envelope import HeartbeatInfo, TelemetrySnapshot
+from fairyclaw.core.gateway_protocol.models import now_ms
 from fairyclaw.core.events.bus import SessionEventBus
 from fairyclaw.core.events.plugin_dispatcher import EventPluginDispatcher
-from fairyclaw.core.events.runtime import set_file_delivery
+from fairyclaw.core.events.runtime import get_user_gateway, set_file_delivery, set_runtime_bus, set_user_gateway
 from fairyclaw.core.events.session_scheduler import RuntimeSessionScheduler
-from fairyclaw.core.events.runtime import set_runtime_bus
-from fairyclaw.config.settings import settings
 from fairyclaw.infrastructure.database.models import Base
 from fairyclaw.infrastructure.database.session import engine
 from fairyclaw.infrastructure.logging_setup import setup_logging
@@ -27,7 +30,6 @@ from fairyclaw.infrastructure.logging_setup import setup_logging
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="FairyClaw", version="0.1.0")
-bridge_server = WsBridgeServer()
 
 # Add CORS middleware
 app.add_middleware(
@@ -66,19 +68,36 @@ async def startup() -> None:
     planner = Planner()
     event_dispatcher = EventPluginDispatcher(planner.registry)
     bus = SessionEventBus(worker_count=settings.event_bus_worker_count)
-    set_file_delivery(bridge_server.deliver_file_to_user)
+    gw_control = BusinessGatewayControl(planner)
+    user_gateway = UserGateway(bus=bus, gateway_control=gw_control)
+    set_user_gateway(user_gateway)
+
+    async def telemetry_loop() -> None:
+        while True:
+            await asyncio.sleep(30)
+            uwg = get_user_gateway()
+            if uwg is None:
+                continue
+            snap = TelemetrySnapshot(
+                heartbeat=HeartbeatInfo(status="HEARTBEAT_OK", server_time_ms=now_ms(), message=None),
+                reins_enabled=settings.reins_enabled,
+            )
+            await uwg.emit_telemetry_snapshot(snap)
+
+    asyncio.create_task(telemetry_loop())
+    set_file_delivery(user_gateway.emit_file)
     scheduler = RuntimeSessionScheduler(
         bus=bus,
         planner=planner,
         event_dispatcher=event_dispatcher,
-        push_outbound=bridge_server.push_outbound,
     )
     await scheduler.start()
     set_runtime_bus(bus)
     app.state.runtime_bus = bus
     app.state.runtime_planner = planner
     app.state.runtime_scheduler = scheduler
-    app.state.bridge_server = bridge_server
+    app.state.user_gateway = user_gateway
+    app.include_router(create_ws_bridge_router(user_gateway), tags=["bridge"])
 
 
 @app.on_event("shutdown")
@@ -95,6 +114,7 @@ async def shutdown() -> None:
     if bus:
         await bus.stop()
     set_file_delivery(None)
+    set_user_gateway(None)
     logger.info("FairyClaw shutdown complete")
 
 
@@ -157,4 +177,3 @@ async def request_validation_handler(_: Request, exc: RequestValidationError):
         },
     )
 
-app.include_router(create_ws_bridge_router(bridge_server), tags=["bridge"])

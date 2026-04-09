@@ -18,6 +18,8 @@ from fairyclaw.core.gateway_protocol.models import (
     ACK_STATUS_DUPLICATE,
     ACK_STATUS_OK,
     FRAME_ACK,
+    FRAME_GATEWAY_CONTROL,
+    FRAME_GATEWAY_CONTROL_ACK,
     FRAME_FILE_GET,
     FRAME_FILE_GET_ACK,
     FRAME_FILE_GET_CHUNK,
@@ -79,6 +81,7 @@ class WsBridgeClient:
         self._session_waiters: dict[str, asyncio.Future[BridgeFrame]] = {}
         self._file_put_waiters: dict[str, asyncio.Future[BridgeFrame]] = {}
         self._downloads: dict[str, _DownloadState] = {}
+        self._gateway_control_waiters: dict[str, asyncio.Future[BridgeFrame]] = {}
         self._pending_inbound_frames: "OrderedDict[str, BridgeFrame]" = OrderedDict()
         self._last_ack_inbound_id: str | None = None
         self._last_ack_outbound_id: str | None = None
@@ -249,6 +252,33 @@ class WsBridgeClient:
         content = b"".join(state.chunks[index] for index in sorted(state.chunks.keys()))
         return content, state.filename, state.mime_type
 
+    async def send_bridge_control(self, op: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Exchange one control payload over the Bridge WebSocket only (envelope protocol).
+
+        Sends ``gateway_control`` and awaits ``gateway_control_ack`` on the same Bridge connection.
+        This is not HTTP or any separate RPC service—only ``BridgeFrame`` types from ``models.py``.
+        """
+        await self.ensure_ready()
+        frame = BridgeFrame(
+            type=FRAME_GATEWAY_CONTROL,
+            payload={"op": op, "body": dict(body)},
+            id=new_frame_id("gc"),
+        )
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[BridgeFrame] = loop.create_future()
+        self._gateway_control_waiters[frame.id] = fut
+        try:
+            await self._send_frame(frame)
+            response = await asyncio.wait_for(fut, timeout=120.0)
+        finally:
+            self._gateway_control_waiters.pop(frame.id, None)
+        payload = response.payload
+        if not bool(payload.get("ok")):
+            err = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+            raise RuntimeError(str(err.get("message") or "gateway_control failed"))
+        result = payload.get("body")
+        return result if isinstance(result, dict) else {}
+
     async def _run(self) -> None:
         while not self._stop_event.is_set():
             try:
@@ -283,7 +313,7 @@ class WsBridgeClient:
                 gateway_id=settings.gateway_id,
                 token=settings.bridge_token,
                 adapters=adapters,
-                supports={"resume": True},
+                supports={"resume": True, "gateway_control_envelope_version": 2},
             ).to_dict(),
             id=new_frame_id("hello"),
         )
@@ -375,6 +405,13 @@ class WsBridgeClient:
             # download_file(), which reuses this WebSocket for file_get chunks. Blocking
             # here deadlocks the connection (receiver cannot read chunk frames).
             asyncio.create_task(self._dispatch_outbound_and_ack(frame))
+            return
+
+        if frame.type == FRAME_GATEWAY_CONTROL_ACK:
+            request_id = str(frame.payload.get("request_id") or "")
+            waiter = self._gateway_control_waiters.pop(request_id, None)
+            if waiter and not waiter.done():
+                waiter.set_result(frame)
             return
 
         if frame.type == FRAME_HEARTBEAT:

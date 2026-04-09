@@ -188,7 +188,7 @@ def resolve_safe_path(path: str, root_dir: str | None) -> tuple[SafeFilesystemPa
 
 
 def _memory_with_repo_db(memory: Any) -> Any | None:
-    """Follow memory wrappers (e.g. BridgeOutputMemory -> PersistentMemory) to find .repo.db."""
+    """Follow to PersistentMemory (or wrappers that expose .repo.db) to find DB session."""
     seen: set[int] = set()
     current: Any = memory
     while current is not None and id(current) not in seen:
@@ -288,6 +288,7 @@ class CapabilityGroup(BaseModel):
     always_enable_planner: bool
     always_enable_subagent: bool
     manifest_version: str = "1.0"
+    routing_hint: str | None = None
     capabilities: List[Dict[str, Any]]
     hooks: List[Dict[str, Any]] = Field(default_factory=list)
     event_types: List[Dict[str, Any]] = Field(default_factory=list)

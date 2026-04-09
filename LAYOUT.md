@@ -27,9 +27,9 @@ fairyclaw/
 ├── config/
 │   └── settings.py          ← Process-level configuration (FAIRYCLAW_* prefix); capability-specific params live in group config snapshots via fairyclaw.sdk.group_runtime
 ├── api/                     ← Business HTTP API (routers, schemas, dependencies)
-├── bridge/                  ← WebSocket bridge server (Business side)
-│   ├── ws_server.py         ← WsBridgeServer: accepts Gateway connections
-│   └── bridge_memory.py     ← Per-connection in-flight tracking
+├── bridge/                  ← WebSocket bridge (Business side)
+│   ├── user_gateway.py      ← UserGateway: bridge WS + user inbound/outbound
+│   └── ws_server.py         ← Re-exports `UserGateway` / `create_ws_bridge_router`
 ├── core/                    ← Framework core — stable, minimal surface
 │   ├── domain.py            ← ContentSegment, SegmentType (shared value types)
 │   ├── events/              ← Event bus and session scheduler
@@ -40,7 +40,7 @@ fairyclaw/
 │   ├── main.py              ← Gateway FastAPI app + startup
 │   ├── runtime.py           ← GatewayRuntime: adapters + bridge client
 │   ├── adapters/            ← HTTP and OneBot adapters
-│   │   ├── http_adapter.py
+│   │   ├── web_gateway_adapter.py
 │   │   └── onebot_adapter.py
 │   └── bridge/              ← WS bridge client (Gateway side)
 ├── sdk/                     ← Stable import surface for capability scripts (see below)
@@ -135,7 +135,7 @@ The agent orchestration layer. The Planner runs one "turn" per wakeup.
 
 ### `interfaces/`
 
-`memory_provider.py` — `MemoryProvider` abstract interface (`get_history()`, optional `get_latest_compaction()` / `create_compaction_snapshot()`).
+Light exports (e.g. `CompactionSnapshot`); session persistence is `session/memory.py` (`PersistentMemory`).
 
 ---
 
@@ -197,6 +197,6 @@ The Gateway process: user-facing adapters and the bridge client.
 | `main.py` | FastAPI app for the Gateway; mounts adapter routes; serves `web/dist` at `/app` if built. |
 | `runtime.py` | `GatewayRuntime`: builds adapter routers, starts the bridge client, routes outbound messages back to users. |
 | `route_store.py` | In-memory mapping of `session_id → adapter_key` for outbound routing. |
-| `adapters/http_adapter.py` | REST API adapter (`POST /v1/messages`, `GET /v1/sessions`, etc.). |
+| `adapters/web_gateway_adapter.py` | Web UI adapter: WebSocket at `/v1/ws` only (SPA; no REST chat). |
 | `adapters/onebot_adapter.py` | OneBot v11 adapter: event intake at `POST /onebot/event`, session management commands. |
 | `bridge/ws_client.py` | WebSocket client that connects to Business, handles reconnect, frame dispatch. |

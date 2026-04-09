@@ -13,7 +13,8 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Request
 
-from fairyclaw.config.settings import settings
+from fairyclaw.config.loader import merge_env_keys
+from fairyclaw.config.settings import PROJECT_ROOT, settings
 from fairyclaw.core.domain import ContentSegment
 from fairyclaw.core.gateway_protocol.models import GatewayInboundMessage, GatewayOutboundMessage, GatewaySenderRef, new_frame_id
 from fairyclaw.gateway.adapters.base import GatewayAdapter
@@ -31,6 +32,15 @@ SEGMENT_TYPE_IMAGE = "image"
 BASE64_PROTOCOL_PREFIX = "base64://"
 ONEBOT_SEND_GROUP_ENDPOINT = "send_group_msg"
 ONEBOT_SEND_PRIVATE_ENDPOINT = "send_private_msg"
+
+ONEBOT_ENV_KEYS = frozenset(
+    {
+        "ONEBOT_API_BASE",
+        "ONEBOT_ACCESS_TOKEN",
+        "ONEBOT_ALLOWED_USER",
+        "ONEBOT_SESSION_CMD_PREFIX",
+    }
+)
 
 
 class OneBotGatewayAdapter(GatewayAdapter):
@@ -473,8 +483,38 @@ class OneBotGatewayAdapter(GatewayAdapter):
                 mime_type=response.headers.get("content-type"),
             )
 
+    def get_onebot_settings(self) -> dict[str, str]:
+        """Return current OneBot adapter fields for the web UI."""
+        return {
+            "ONEBOT_API_BASE": self.onebot_api_base,
+            "ONEBOT_ACCESS_TOKEN": self.onebot_access_token,
+            "ONEBOT_ALLOWED_USER": self.onebot_allowed_user,
+            "ONEBOT_SESSION_CMD_PREFIX": self.onebot_session_cmd_prefix,
+        }
+
+    def apply_onebot_settings_then_persist(self, patch: dict[str, Any]) -> None:
+        """Apply in-memory OneBot fields and merge ``ONEBOT_*`` into ``config/fairyclaw.env``."""
+        updates: dict[str, str] = {}
+        for key in ONEBOT_ENV_KEYS:
+            if key not in patch:
+                continue
+            val = str(patch.get(key) or "")
+            updates[key] = val
+            if key == "ONEBOT_API_BASE":
+                self.onebot_api_base = val or "http://localhost:3000"
+            elif key == "ONEBOT_ACCESS_TOKEN":
+                self.onebot_access_token = val
+            elif key == "ONEBOT_ALLOWED_USER":
+                self.onebot_allowed_user = val
+            elif key == "ONEBOT_SESSION_CMD_PREFIX":
+                self.onebot_session_cmd_prefix = val.strip() or "/sess"
+        if updates:
+            merge_env_keys(PROJECT_ROOT / "config" / "fairyclaw.env", updates)
+
     async def send(self, outbound: GatewayOutboundMessage) -> None:
-        _, sender_ref = await self.runtime.route_store.resolve(outbound.session_id)
+        if outbound.kind == "event":
+            return
+        _, sender_ref = await self.runtime.resolve_outbound_route(outbound)
         user_id_raw = sender_ref.get("user_id")
         if user_id_raw is None:
             raise RuntimeError(f"Missing OneBot sender route for session: {outbound.session_id}")

@@ -22,7 +22,16 @@ class TurnExecutionPolicy(Protocol):
     async def should_skip(self, planner: Planner, request: TurnRequest) -> bool:
         """Return whether the current turn should be skipped."""
 
-    async def handle_text_response(self, planner: Planner, request: TurnRequest, message_text: str | None) -> None:
+    async def handle_text_response(
+        self,
+        planner: Planner,
+        request: TurnRequest,
+        message_text: str | None,
+        *,
+        usage_prompt_tokens: int | None = None,
+        usage_completion_tokens: int | None = None,
+        usage_total_tokens: int | None = None,
+    ) -> None:
         """Handle direct-text completion with no tool calls."""
 
     async def handle_tool_follow_up(
@@ -47,12 +56,24 @@ class MainSessionTurnPolicy:
     async def should_skip(self, planner: Planner, request: TurnRequest) -> bool:
         return False
 
-    async def handle_text_response(self, planner: Planner, request: TurnRequest, message_text: str | None) -> None:
+    async def handle_text_response(
+        self,
+        planner: Planner,
+        request: TurnRequest,
+        message_text: str | None,
+        *,
+        usage_prompt_tokens: int | None = None,
+        usage_completion_tokens: int | None = None,
+        usage_total_tokens: int | None = None,
+    ) -> None:
         if message_text:
             await planner._handle_text_fallback(
                 request.session_id,
                 message_text,
                 request.memory,
+                usage_prompt_tokens=usage_prompt_tokens,
+                usage_completion_tokens=usage_completion_tokens,
+                usage_total_tokens=usage_total_tokens,
             )
 
     async def handle_tool_follow_up(
@@ -81,13 +102,25 @@ class SubSessionTurnPolicy:
         planner.logger.info("Skip turn for terminal sub-session: session=%s", request.session_id)
         return True
 
-    async def handle_text_response(self, planner: Planner, request: TurnRequest, message_text: str | None) -> None:
+    async def handle_text_response(
+        self,
+        planner: Planner,
+        request: TurnRequest,
+        message_text: str | None,
+        *,
+        usage_prompt_tokens: int | None = None,
+        usage_completion_tokens: int | None = None,
+        usage_total_tokens: int | None = None,
+    ) -> None:
         if not message_text:
             return
         await planner._handle_text_fallback(
             request.session_id,
             message_text,
             request.memory,
+            usage_prompt_tokens=usage_prompt_tokens,
+            usage_completion_tokens=usage_completion_tokens,
+            usage_total_tokens=usage_total_tokens,
         )
         role_policy = resolve_session_role_policy(request.session_id)
         if role_policy.should_auto_mark_terminal_on_text:

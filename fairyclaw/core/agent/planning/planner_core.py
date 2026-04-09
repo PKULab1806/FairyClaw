@@ -37,6 +37,10 @@ class BasePlanner:
         self.capability_resolver = SessionCapabilityResolver(self.registry)
         self.message_assembler = LlmMessageAssembler()
 
+    def reload_llm_client(self) -> None:
+        """Reload the default LLM client from disk after ``apply_llm_document``."""
+        self.llm_client = create_default_llm_client()
+
     def resolve_llm_client(self, task_type: str):
         """Resolve LLM client by task type with graceful fallback."""
         if task_type == "general":

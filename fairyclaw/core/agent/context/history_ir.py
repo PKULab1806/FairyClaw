@@ -148,6 +148,7 @@ class ToolCallRound:
     call_id: str
     arguments_json: str
     tool_result: str
+    success: bool = True
 
     @classmethod
     def from_persisted(
@@ -165,6 +166,7 @@ class ToolCallRound:
             call_id=call_id,
             arguments_json=arguments_json,
             tool_result="" if tool_result is None else str(tool_result),
+            success=True,
         )
 
     @staticmethod

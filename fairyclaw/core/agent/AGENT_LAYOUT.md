@@ -10,7 +10,7 @@
 | `routing/` | 能力组选择与路由策略 | `ToolRouter` 仅依赖 capability profiles |
 | `hooks/` | Hook 协议、执行器与阶段调度器 | Turn hook 全程使用 typed payload，同 stage 内输入输出同型 |
 | `executors/` | 上下文/工具执行流水线 | 组合 `hooks` 和 `planning`，不持有全局状态 |
-| `interfaces/` | 协议与抽象接口 | 当前仅保留 `MemoryProvider`，其余未接线 ABC 已移除 |
+| `interfaces/` | 轻量导出 | 如 `CompactionSnapshot`；会话持久化以 `session/memory.py` 中 `PersistentMemory` 为准 |
 | root (`constants.py`, `types.py`) | 跨层通用常量与轻量类型 | 根目录不再保留 shim/re-export；实现以子包为唯一来源 |
 
 ## SDK Dependency Direction
@@ -108,7 +108,7 @@
 
 ## Session / Memory Boundary
 
-`MemoryProvider` 当前只保留 planner 真正需要的职责：
+`PersistentMemory` 承担 planner 需要的持久化：
 
 - `get_history(session_id) -> list[ChatHistoryItem]`
 - `add_session_event(session_id, message: SessionMessageBlock)`
@@ -119,6 +119,7 @@
 - `query_memory` 已删除
 - `PersistentMemory` 负责把数据库行解析为 IR
 - planner / context 不再接触历史 `dict`
+- 面向用户的出站（assistant 文本、文件、`tool_call` / `tool_result`）由 `fairyclaw.bridge.user_gateway.UserGateway` 经桥推送，不再通过 memory 包装类
 
 ## Runtime Boundary
 

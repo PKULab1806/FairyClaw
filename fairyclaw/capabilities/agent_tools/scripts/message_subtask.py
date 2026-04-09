@@ -8,7 +8,7 @@ from fairyclaw.core.agent.session.memory import PersistentMemory
 from fairyclaw.core.capabilities.models import ToolContext
 from fairyclaw.core.domain import ContentSegment
 from fairyclaw.core.events.bus import EventType
-from fairyclaw.core.events.runtime import publish_runtime_event
+from fairyclaw.core.events.runtime import get_user_gateway, publish_runtime_event
 from fairyclaw.infrastructure.database.models import SessionModel
 from fairyclaw.infrastructure.database.repository import EventRepository
 from fairyclaw.infrastructure.database.session import AsyncSessionLocal
@@ -89,6 +89,9 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
     else:
         state.update_status(resolved_task_id, f"running:{task_type}")
     clear_sub_session_cancel(resolved_task_id)
+    uwg = get_user_gateway()
+    if uwg is not None:
+        await uwg.emit_subagent_tasks_snapshot(main_session_id)
 
     event_payload = {
         "segment_count": 1,
@@ -115,9 +118,14 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
             )
             sub_session = await db.get(SessionModel, resolved_task_id)
             if sub_session and isinstance(sub_session.meta, dict):
+                meta = dict(sub_session.meta)
+                meta["subtask_status"] = f"running:{task_type}"
+                meta["task_type"] = task_type
+                sub_session.meta = meta
                 maybe_groups = sub_session.meta.get("enabled_groups")
                 if isinstance(maybe_groups, list):
                     enabled_groups = [g for g in maybe_groups if isinstance(g, str) and g.strip()]
+                await db.commit()
             if enabled_groups:
                 event_payload["enabled_groups"] = enabled_groups
     except Exception as e:

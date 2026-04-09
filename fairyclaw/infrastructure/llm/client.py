@@ -49,6 +49,9 @@ class ChatResult:
 
     text: str
     tool_calls: list[ToolCall]
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
 
 
 class OpenAICompatibleLLMClient:
@@ -75,7 +78,7 @@ class OpenAICompatibleLLMClient:
         trace_fn = self._load_reins_trace() if settings.reins_enabled else None
         if trace_fn is not None:
             self._sdk_chat_call = trace_fn(
-                budget=settings.reins_budget_monthly_usd,
+                budget=settings.reins_budget_daily_usd,
                 on_exceed=settings.reins_on_exceed,
                 agent_name=REINS_AGENT_NAME,
             )(self._call_chat_completion_sdk)
@@ -322,7 +325,17 @@ class OpenAICompatibleLLMClient:
                     arguments=str(function.get("arguments", "{}")),
                 )
             )
-        return ChatResult(text=text, tool_calls=calls)
+        usage = data.get("usage", {}) if isinstance(data, dict) else {}
+        prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
+        completion_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+        total_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
+        return ChatResult(
+            text=text,
+            tool_calls=calls,
+            prompt_tokens=int(prompt_tokens) if isinstance(prompt_tokens, int) else None,
+            completion_tokens=int(completion_tokens) if isinstance(completion_tokens, int) else None,
+            total_tokens=int(total_tokens) if isinstance(total_tokens, int) else None,
+        )
 
     def _normalize_message_content(self, content: Any) -> str:
         """Normalize model `content` payloads into plain text."""

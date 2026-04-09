@@ -53,6 +53,9 @@ class EventModel(Base):
     tool_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     tool_args: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     tool_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    usage_prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    usage_completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    usage_total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     session: Mapped[SessionModel] = relationship(back_populates="events")
 

@@ -2,8 +2,8 @@
 
 FairyClaw runs as two separate processes that communicate over a persistent WebSocket connection:
 
-- **Business process** (default port `8000`) — the agent runtime, event bus, and planner.
-- **Gateway process** (default port `8081`) — user-facing adapters (HTTP API, OneBot, etc.).
+- **Business process** (default port `8000`) — the agent runtime, event bus, and planner. The WebSocket endpoint is implemented by [`UserGateway`](../fairyclaw/bridge/user_gateway.py) (`fairyclaw.bridge.user_gateway`).
+- **Gateway process** (default port `8081`) — user-facing adapters (Web UI WebSocket, OneBot, etc.).
 
 The Gateway initiates the connection to Business at `GET /internal/gateway/ws`.
 
@@ -80,7 +80,7 @@ Gateway                              Business
   "gateway_id": "gw_local",
   "token": "<FAIRYCLAW_BRIDGE_TOKEN>",
   "adapters": [
-    { "adapter_key": "http",   "kind": "http_api",    "version": "1" },
+    { "adapter_key": "http",   "kind": "web_ws",      "version": "1" },
     { "adapter_key": "onebot", "kind": "onebot_v11",  "version": "1" }
   ],
   "supports": { "resume": true }

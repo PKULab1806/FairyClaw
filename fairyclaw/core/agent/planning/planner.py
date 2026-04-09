@@ -34,7 +34,8 @@ from fairyclaw.core.agent.hooks.protocol import (
 from fairyclaw.core.agent.planning.subtask_coordinator import SubtaskCoordinator
 from fairyclaw.core.agent.planning.tool_logging import make_short_tool_call_id, summarize_tool_args
 from fairyclaw.core.agent.session.global_state import get_session_lock
-from fairyclaw.core.agent.interfaces.memory_provider import MemoryProvider
+from fairyclaw.core.agent.session.memory import PersistentMemory
+from fairyclaw.core.events.runtime import get_user_gateway
 from fairyclaw.core.agent.types import SessionKind, TurnRequest, TurnRuntimePrefs
 from fairyclaw.core.domain import ContentSegment
 from fairyclaw.core.events.bus import EventType
@@ -65,6 +66,9 @@ class PreparedTurnResult:
     hook_context: HookExecutionContext
     tool_calls: list[LlmToolCallRequest]
     message_text: str | None
+    usage_prompt_tokens: int | None = None
+    usage_completion_tokens: int | None = None
+    usage_total_tokens: int | None = None
     force_finish: ForceFinishDirective | None = None
 
 
@@ -127,13 +131,23 @@ class Planner(BasePlanner):
             if turn_result.force_finish is not None:
                 return
             if not turn_result.tool_calls:
-                await policy.handle_text_response(self, request, turn_result.message_text)
+                await policy.handle_text_response(
+                    self,
+                    request,
+                    turn_result.message_text,
+                    usage_prompt_tokens=turn_result.usage_prompt_tokens,
+                    usage_completion_tokens=turn_result.usage_completion_tokens,
+                    usage_total_tokens=turn_result.usage_total_tokens,
+                )
                 return
             tool_result = await self._process_tool_calls(
                 request.session_id,
                 turn_result.tool_calls,
                 turn_result.message_text,
                 request.memory,
+                usage_prompt_tokens=turn_result.usage_prompt_tokens,
+                usage_completion_tokens=turn_result.usage_completion_tokens,
+                usage_total_tokens=turn_result.usage_total_tokens,
                 hook_context=turn_result.hook_context,
                 enabled_groups=turn_result.resolved_groups,
             )
@@ -237,6 +251,9 @@ class Planner(BasePlanner):
                 hook_context=hook_context,
                 tool_calls=[],
                 message_text=None,
+                usage_prompt_tokens=None,
+                usage_completion_tokens=None,
+                usage_total_tokens=None,
                 force_finish=before_llm_directive,
             )
         openai_messages = to_openai_messages(before_llm_payload.turn.llm_messages)
@@ -280,6 +297,9 @@ class Planner(BasePlanner):
             hook_context=hook_context,
             tool_calls=list(after_llm_payload.tool_calls),
             message_text=after_llm_payload.message_text,
+            usage_prompt_tokens=chat_result.prompt_tokens,
+            usage_completion_tokens=chat_result.completion_tokens,
+            usage_total_tokens=chat_result.total_tokens,
             force_finish=after_llm_directive,
         )
 
@@ -432,7 +452,11 @@ class Planner(BasePlanner):
         self,
         session_id: str,
         content: str,
-        memory: MemoryProvider | None,
+        memory: PersistentMemory | None,
+        *,
+        usage_prompt_tokens: int | None = None,
+        usage_completion_tokens: int | None = None,
+        usage_total_tokens: int | None = None,
     ) -> None:
         """Handle direct-text model output path.
 
@@ -453,14 +477,24 @@ class Planner(BasePlanner):
                 await memory.add_session_event(
                     session_id=session_id,
                     message=assistant_message,
+                    usage_prompt_tokens=usage_prompt_tokens,
+                    usage_completion_tokens=usage_completion_tokens,
+                    usage_total_tokens=usage_total_tokens,
                 )
+                gw = get_user_gateway()
+                if gw:
+                    await gw.emit_assistant_text(session_id, content)
 
     async def _process_tool_calls(
         self,
         session_id: str,
         tool_calls: list[LlmToolCallRequest],
         message_text: str | None,
-        memory: MemoryProvider | None,
+        memory: PersistentMemory | None,
+        *,
+        usage_prompt_tokens: int | None = None,
+        usage_completion_tokens: int | None = None,
+        usage_total_tokens: int | None = None,
         hook_context: HookExecutionContext | None = None,
         enabled_groups: list[str] | None = None,
     ) -> ToolBatchExecutionResult:
@@ -489,7 +523,16 @@ class Planner(BasePlanner):
                     await memory.add_session_event(
                         session_id=session_id,
                         message=assistant_preface,
+                        usage_prompt_tokens=usage_prompt_tokens,
+                        usage_completion_tokens=usage_completion_tokens,
+                        usage_total_tokens=usage_total_tokens,
                     )
+                    gw = get_user_gateway()
+                    if gw:
+                        await gw.emit_assistant_text(session_id, visible_message)
+                usage_prompt_tokens = None
+                usage_completion_tokens = None
+                usage_total_tokens = None
 
         called_tools: list[str] = []
         for index, raw_request in enumerate(tool_calls):
@@ -546,6 +589,14 @@ class Planner(BasePlanner):
             logger.info(
                 f"Tool call requested: session={session_id}, tool={func_name}, call_id={call_id}, args={args_summary}"
             )
+            gw = get_user_gateway()
+            if memory and gw:
+                await gw.emit_tool_call(
+                    session_id,
+                    tool_call_id=call_id,
+                    tool_name=func_name,
+                    arguments_json=args_json,
+                )
             try:
                 tool_result_raw = await self.tool_runtime.execute(
                     tool_name=func_name,
@@ -568,15 +619,29 @@ class Planner(BasePlanner):
                 should_record = False
 
             if should_record and memory:
-                await memory.add_operation_event(
-                    session_id=session_id,
-                    tool_round=ToolCallRound(
-                        tool_name=func_name,
-                        call_id=call_id,
-                        arguments_json=args_json,
-                        tool_result=result_text,
-                    ),
+                tr = ToolCallRound(
+                    tool_name=func_name,
+                    call_id=call_id,
+                    arguments_json=args_json,
+                    tool_result=result_text,
+                    success=(tool_status == "ok"),
                 )
+                if usage_total_tokens is not None or usage_prompt_tokens is not None or usage_completion_tokens is not None:
+                    await memory.add_operation_event(
+                        session_id=session_id,
+                        tool_round=tr,
+                        usage_prompt_tokens=usage_prompt_tokens,
+                        usage_completion_tokens=usage_completion_tokens,
+                        usage_total_tokens=usage_total_tokens,
+                    )
+                    usage_prompt_tokens = None
+                    usage_completion_tokens = None
+                    usage_total_tokens = None
+                else:
+                    await memory.add_operation_event(session_id=session_id, tool_round=tr)
+                gw2 = get_user_gateway()
+                if gw2:
+                    await gw2.emit_tool_result(session_id, tr)
 
             if hook_context is not None:
                 after_output = await self.hook_stage_runner.run_stage(

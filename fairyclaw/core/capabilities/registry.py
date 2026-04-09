@@ -39,6 +39,7 @@ class CapabilityRegistry:
         """
         self.capabilities_dir = Path(capabilities_dir)
         self.groups: Dict[str, CapabilityGroup] = {}
+        self._manifest_paths: Dict[str, Path] = {}
         self.tools: Dict[str, ToolCapability] = {}
         self.event_types: Dict[str, EventTypeDefinition] = {}
         self.hooks: Dict[str, list[HookDefinition]] = {}
@@ -69,6 +70,7 @@ class CapabilityRegistry:
                         group = CapabilityGroup(**manifest_data)
                         group.runtime_config = self._load_group_runtime_config(group.name, group_dir)
                         self.groups[group.name] = group
+                        self._manifest_paths[group.name] = manifest_path
                         
                         # Register Tools
                         for tool_def in group.tools:
@@ -351,4 +353,26 @@ class CapabilityRegistry:
             })
 
         return tools_schema
+
+    def apply_group_policy_and_persist(self, group_name: str, patch: Dict[str, Any]) -> None:
+        """Update planner visibility flags in memory and atomically merge into the group manifest JSON."""
+        if group_name not in self.groups:
+            raise ValueError(f"Unknown capability group: {group_name}")
+        manifest_path = self._manifest_paths.get(group_name)
+        if manifest_path is None or not manifest_path.exists():
+            raise ValueError(f"Manifest path not found for group: {group_name}")
+        allowed_keys = {"always_enable_planner", "always_enable_subagent", "routing_hint", "manifest_version"}
+        filtered = {k: v for k, v in patch.items() if k in allowed_keys}
+        if not filtered:
+            raise ValueError("No valid policy keys in patch")
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            raw: Dict[str, Any] = json.load(f)
+        for k, v in filtered.items():
+            raw[k] = v
+        from fairyclaw.config.loader import save_json_atomic
+
+        save_json_atomic(manifest_path, raw)
+        current = self.groups[group_name]
+        updated = current.model_copy(update=filtered)
+        self.groups[group_name] = updated
 

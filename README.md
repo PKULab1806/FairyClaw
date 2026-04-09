@@ -43,17 +43,21 @@ Capability groups bundle related tools together with descriptions that guide too
 The core orchestration stays lean and well-bounded. Concrete capabilities are delivered via manifest + script: tools, Turn Hooks, runtime event Hooks, and custom `event_types` are all registered declaratively rather than hard-coded in core.
 
 **Dual-process architecture**
-The Business process (runtime + Planner) and the Gateway process (user-facing HTTP API / OneBot adapters) communicate over an internal WebSocket bridge. Responsibilities are cleanly separated; the Gateway can scale or be replaced independently.
+The Business process (runtime + Planner) and the Gateway process (user-facing adapters: WebSocket web UI at `/v1/ws`, OneBot, etc.) communicate over an internal WebSocket bridge. Responsibilities are cleanly separated; the Gateway can scale or be replaced independently.
 
 ---
 
 ## Documentation
 
+Keep **[AI_SYSTEM_GUIDE.md](AI_SYSTEM_GUIDE.md)** and this **README** aligned with the running system when you change gateway surfaces, bridge behavior, or control-plane events (they are the canonical entry points for humans and tooling).
+
 | Document | Contents |
 |---|---|
 | [AI_SYSTEM_GUIDE.md](AI_SYSTEM_GUIDE.md) | **Canonical system reference**: architecture, event model, Hook protocol, Sub-Agent mechanics, development conventions (useful for both AI assistants and human developers) |
+| [README.md](README.md) | **Project overview**, quick start, and documentation index |
 | [LAYOUT.md](LAYOUT.md) | Module responsibility map: every directory and key file at a glance |
 | [docs/GATEWAY_ENVELOPE.md](docs/GATEWAY_ENVELOPE.md) | Gateway–Business WebSocket bridge protocol: frame structure, lifecycle, file transfer |
+| [fairyclaw/core/gateway_protocol/GATEWAY_RUNTIME_PROTOCOL.md](fairyclaw/core/gateway_protocol/GATEWAY_RUNTIME_PROTOCOL.md) | Control envelope types and web `/v1/ws` push shapes (including `kind=event` tool_call / tool_result) |
 | [DEPLOY.md](DEPLOY.md) | Deployment guide: Python venv, Docker Compose, systemd, Web UI, OneBot/NapCat setup |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution guide: capability group extension, Hook boundary types, manifest schema |
 

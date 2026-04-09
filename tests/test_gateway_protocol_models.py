@@ -3,7 +3,7 @@
 import asyncio
 
 from fairyclaw.core.gateway_protocol.models import BridgeFrame, GatewayOutboundMessage
-from fairyclaw.gateway.adapters.http_adapter import HttpGatewayAdapter
+from fairyclaw.gateway.adapters.web_gateway_adapter import WebGatewayAdapter
 
 
 def test_bridge_frame_roundtrip_preserves_payload() -> None:
@@ -23,8 +23,22 @@ def test_bridge_frame_roundtrip_preserves_payload() -> None:
     assert frame.payload["segments"][0]["text"] == "hello"
 
 
+def test_gateway_outbound_message_roundtrip_preserves_route_hints() -> None:
+    from dataclasses import replace
+
+    base = GatewayOutboundMessage.text(session_id="sess_1", text="hi")
+    msg = replace(
+        base,
+        adapter_key="onebot",
+        sender_ref={"user_id": "123", "group_id": None},
+    )
+    restored = GatewayOutboundMessage.from_payload(msg.to_payload())
+    assert restored.adapter_key == "onebot"
+    assert restored.sender_ref == {"user_id": "123", "group_id": None}
+
+
 def test_http_gateway_adapter_backlogs_outbound_without_subscriber() -> None:
-    adapter = HttpGatewayAdapter()
+    adapter = WebGatewayAdapter()
     asyncio.run(
         adapter.send(
             GatewayOutboundMessage.text(
@@ -33,4 +47,5 @@ def test_http_gateway_adapter_backlogs_outbound_without_subscriber() -> None:
             )
         )
     )
-    assert adapter._backlog["sess_1"][-1]["content"] == {"text": "hello"}
+    assert adapter._backlog["sess_1"][-1]["op"] == "push"
+    assert adapter._backlog["sess_1"][-1]["body"]["content"] == {"text": "hello"}

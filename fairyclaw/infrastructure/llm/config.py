@@ -5,7 +5,9 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from fairyclaw.config.loader import load_yaml
+from typing import Any
+
+from fairyclaw.config.loader import load_yaml, save_yaml_atomic
 from fairyclaw.config.settings import settings
 
 
@@ -70,3 +72,21 @@ def load_llm_endpoint_config() -> LLMEndpointConfig:
             temperature=float(raw.get("temperature", 0.2)),
         )
     return LLMEndpointConfig(default_profile=default_profile, fallback_profile=fallback_profile, profiles=profiles)
+
+
+def get_llm_document() -> dict[str, Any]:
+    """Return the current ``llm_endpoints.yaml`` tree as a JSON-compatible dict."""
+    path = Path(settings.llm_endpoints_config_path)
+    if not path.exists():
+        return {"default_profile": "main", "fallback_profile": None, "profiles": {}}
+    return load_yaml(path)
+
+
+def apply_llm_document(document: dict[str, Any]) -> None:
+    """Persist LLM endpoints YAML and rely on the next ``create_*_llm_client`` load to pick it up."""
+    if not isinstance(document.get("profiles"), dict):
+        raise ValueError("document.profiles must be an object")
+    dp = document.get("default_profile")
+    if not isinstance(dp, str) or not dp.strip():
+        raise ValueError("document.default_profile must be a non-empty string")
+    save_yaml_atomic(settings.llm_endpoints_config_path, document)

@@ -8,6 +8,7 @@ Encapsulates read/write operations for Session, Event, and File entities.
 import asyncio
 import logging
 from dataclasses import dataclass
+import datetime as dt
 from typing import Any, Awaitable, Callable, List
 
 from sqlalchemy import func, select
@@ -252,7 +253,16 @@ class EventRepository:
         """
         self.db = db
 
-    async def add_session_event(self, session_id: str, role: str, content: list[dict[str, Any]]) -> EventModel:
+    async def add_session_event(
+        self,
+        session_id: str,
+        role: str,
+        content: list[dict[str, Any]],
+        *,
+        usage_prompt_tokens: int | None = None,
+        usage_completion_tokens: int | None = None,
+        usage_total_tokens: int | None = None,
+    ) -> EventModel:
         """Insert one user-visible session event.
 
         Args:
@@ -268,6 +278,9 @@ class EventRepository:
             type=EventType.SESSION_EVENT.value,
             role=role,
             content=content,
+            usage_prompt_tokens=usage_prompt_tokens,
+            usage_completion_tokens=usage_completion_tokens,
+            usage_total_tokens=usage_total_tokens,
         )
         async def _write() -> None:
             self.db.add(model)
@@ -276,7 +289,17 @@ class EventRepository:
         await self.db.refresh(model)
         return model
 
-    async def add_operation_event(self, session_id: str, tool_name: str, tool_args: dict[str, Any], tool_result: Any) -> EventModel:
+    async def add_operation_event(
+        self,
+        session_id: str,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        tool_result: Any,
+        *,
+        usage_prompt_tokens: int | None = None,
+        usage_completion_tokens: int | None = None,
+        usage_total_tokens: int | None = None,
+    ) -> EventModel:
         """Insert one tool-operation event.
 
         Args:
@@ -294,6 +317,9 @@ class EventRepository:
             tool_name=tool_name,
             tool_args=tool_args,
             tool_result=tool_result,
+            usage_prompt_tokens=usage_prompt_tokens,
+            usage_completion_tokens=usage_completion_tokens,
+            usage_total_tokens=usage_total_tokens,
         )
         async def _write() -> None:
             self.db.add(model)
@@ -320,6 +346,44 @@ class EventRepository:
         )
         rows = (await self.db.execute(stmt)).scalars().all()
         return list(reversed(rows))
+
+    async def usage_totals(
+        self,
+        *,
+        session_id: str | None = None,
+        session_ids: list[str] | None = None,
+        month_utc: dt.datetime | None = None,
+    ) -> dict[str, int]:
+        """Aggregate persisted token usage totals."""
+        stmt = select(
+            func.coalesce(func.sum(EventModel.usage_prompt_tokens), 0),
+            func.coalesce(func.sum(EventModel.usage_completion_tokens), 0),
+            func.coalesce(func.sum(EventModel.usage_total_tokens), 0),
+        )
+        if session_id is not None:
+            stmt = stmt.where(EventModel.session_id == session_id)
+        if session_ids is not None:
+            normalized = [sid for sid in session_ids if sid]
+            if not normalized:
+                return {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                }
+            stmt = stmt.where(EventModel.session_id.in_(normalized))
+        if month_utc is not None:
+            month_start = dt.datetime(month_utc.year, month_utc.month, 1, tzinfo=dt.timezone.utc)
+            if month_utc.month == 12:
+                month_end = dt.datetime(month_utc.year + 1, 1, 1, tzinfo=dt.timezone.utc)
+            else:
+                month_end = dt.datetime(month_utc.year, month_utc.month + 1, 1, tzinfo=dt.timezone.utc)
+            stmt = stmt.where(EventModel.timestamp >= month_start).where(EventModel.timestamp < month_end)
+        row = (await self.db.execute(stmt)).one()
+        return {
+            "prompt_tokens": int(row[0] or 0),
+            "completion_tokens": int(row[1] or 0),
+            "total_tokens": int(row[2] or 0),
+        }
 
 
 def _normalize_file_id_for_lookup(file_id: str) -> str:

@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fairyclaw.config.settings import settings
@@ -29,14 +28,13 @@ from fairyclaw.core.events.payloads import (
     WakeupRequestedEventPayload,
 )
 from fairyclaw.core.events.plugin_dispatcher import EventPluginDispatcher
-from fairyclaw.core.gateway_protocol.models import GatewayOutboundMessage
+from fairyclaw.core.events.runtime import get_user_gateway
 from fairyclaw.infrastructure.database.models import SessionModel
 from fairyclaw.infrastructure.database.session import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TASK_TYPE = "general"
-OutboundPusher = Callable[[GatewayOutboundMessage], Awaitable[None]]
 
 
 class RuntimeSessionScheduler:
@@ -47,12 +45,10 @@ class RuntimeSessionScheduler:
         bus: SessionEventBus,
         planner: Planner,
         event_dispatcher: EventPluginDispatcher,
-        push_outbound: OutboundPusher | None = None,
     ) -> None:
         self.bus = bus
         self.planner = planner
         self.event_dispatcher = event_dispatcher
-        self.push_outbound = push_outbound
         self.session_states: dict[str, SessionRuntimeState] = {}
         self.state_lock = asyncio.Lock()
         self.debounce_tasks: dict[str, asyncio.Task[None]] = {}
@@ -246,7 +242,6 @@ class RuntimeSessionScheduler:
                         session_kind=SessionKind.SUB if is_sub_session else SessionKind.MAIN,
                     ),
                     self.planner,
-                    self.push_outbound,
                 )
             finally:
                 stop_signal.set()
@@ -354,6 +349,9 @@ class RuntimeSessionScheduler:
                 reason=WakeupReason.SUBTASK_COMPLETED.value,
                 source="subtask_completed",
             )
+        uwg = get_user_gateway()
+        if uwg is not None:
+            asyncio.create_task(uwg.emit_subagent_tasks_snapshot(event.session_id))
 
     async def _handle_wakeup_requested(self, event: RuntimeEvent) -> None:
         parsed = WakeupRequestedEventPayload.from_runtime_event(event)

@@ -5,14 +5,25 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 
 from fairyclaw.core.agent.context.history_ir import ChatHistoryItem, SegmentsBody, SessionMessageBlock, ToolCallRound
-from fairyclaw.core.agent.interfaces.memory_provider import CompactionSnapshot, MemoryProvider
 from fairyclaw.core.domain import ContentSegment, EventType
 from fairyclaw.infrastructure.database.repository import EventRepository, MemoryCompactionRepository
 
 
-class PersistentMemory(MemoryProvider):
+@dataclass(frozen=True)
+class CompactionSnapshot:
+    """Structured compaction snapshot visible to hooks and planners."""
+
+    strategy: str
+    summary_text: str
+    key_facts: dict[str, object]
+    from_event_id: str | None = None
+    to_event_id: str | None = None
+
+
+class PersistentMemory:
     """Repository-backed memory service for session and operation events."""
 
     def __init__(self, repo: EventRepository):
@@ -62,7 +73,15 @@ class PersistentMemory(MemoryProvider):
                 )
         return history
 
-    async def add_session_event(self, session_id: str, message: SessionMessageBlock) -> None:
+    async def add_session_event(
+        self,
+        session_id: str,
+        message: SessionMessageBlock,
+        *,
+        usage_prompt_tokens: int | None = None,
+        usage_completion_tokens: int | None = None,
+        usage_total_tokens: int | None = None,
+    ) -> None:
         """Persist user-visible session event.
 
         Args:
@@ -74,9 +93,24 @@ class PersistentMemory(MemoryProvider):
         """
         async with self._lock:
             content = self._serialize_message_content(message)
-            await self.repo.add_session_event(session_id=session_id, role=message.role.value, content=content)
+            await self.repo.add_session_event(
+                session_id=session_id,
+                role=message.role.value,
+                content=content,
+                usage_prompt_tokens=usage_prompt_tokens,
+                usage_completion_tokens=usage_completion_tokens,
+                usage_total_tokens=usage_total_tokens,
+            )
 
-    async def add_operation_event(self, session_id: str, tool_round: ToolCallRound) -> None:
+    async def add_operation_event(
+        self,
+        session_id: str,
+        tool_round: ToolCallRound,
+        *,
+        usage_prompt_tokens: int | None = None,
+        usage_completion_tokens: int | None = None,
+        usage_total_tokens: int | None = None,
+    ) -> None:
         """Persist tool execution event for replayable operation history.
 
         Args:
@@ -95,6 +129,9 @@ class PersistentMemory(MemoryProvider):
                     "arguments_json": tool_round.arguments_json,
                 },
                 tool_result=tool_round.tool_result,
+                usage_prompt_tokens=usage_prompt_tokens,
+                usage_completion_tokens=usage_completion_tokens,
+                usage_total_tokens=usage_total_tokens,
             )
 
     async def get_latest_compaction(self, session_id: str) -> CompactionSnapshot | None:

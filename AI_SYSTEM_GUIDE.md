@@ -52,13 +52,10 @@ Key characteristics:
   - Shared orchestration dependency assembly (registry, router, hook runtime, LLM client resolution).
 - `fairyclaw/core/agent/session/session_role.py`
   - Behavioral policy for main and sub sessions (whether to call back the user, whether text turns auto-terminate).
-- `fairyclaw/core/agent/interfaces/memory_provider.py`
-  - The single active interface: `MemoryProvider`.
-  - `get_history()` returns `ChatHistoryItem` IR directly.
-  - Optional compaction snapshot interface: `get_latest_compaction()` / `create_compaction_snapshot()`.
 - `fairyclaw/core/agent/session/memory.py`
   - `PersistentMemory`: parses database rows into IR; writes typed `SessionMessageBlock` / `ToolCallRound`.
   - Also reads and writes compaction snapshots in the `memory_compactions` table.
+  - Optional `CompactionSnapshot` export lives alongside `PersistentMemory` (see `interfaces/` for re-exports).
 - `fairyclaw/core/agent/session/global_state.py`
   - Sub-agent registry, terminal state checking, aggregated result construction.
   - Batch number management: retains full history while aggregating only the current batch.
@@ -206,8 +203,8 @@ Visibility is now enforced by capability fields and session scope, not prompt lu
 - Whether the main session exposes this group depends on `always_enable_planner`; whether a sub-session exposes it depends on `always_enable_subagent` and delegation routing results.
 - Text/file delivery goes through the **GatewayEgress interface** (`emit_text` / `emit_file`) injected into the Planner — Business → WS Bridge → Gateway → Adapter — and does not use HTTP callbacks.
 - The Gateway maintains a separate database routing table for `session → channel` and `sub_session → parent_session` mappings; Business no longer reads or writes `session.meta.gateway_route`.
-- The `send_file` tool only persists a local file as a session file (generating a `file_id`); the Planner itself no longer hard-codes `send_file` outbound delivery — file return is handled uniformly by the outer tool-result egress adapter.
-- `send_file` does not insert file segments into the session message history (preventing file segment / JSON arrays in the Planner context); persisted tool-result rows are redacted to a brief description; users only receive the actual file through the Gateway channel.
+- The `send_file` tool only persists a local file as a session file (generating a `file_id`); file return is handled uniformly by the outer tool-result egress adapter (no tool-name branching in the Planner for delivery).
+- `send_file` does not insert file segments into the session message history (preventing file segment / JSON arrays in the Planner context); tool args and results are persisted and shown on the gateway like other tools; users still receive the actual file bytes through the Gateway channel.
 - File outbound frames carry only `file_id`; the adapter resolves the file bytes and delivers them according to its channel semantics.
 - Gateway and Business must share the same `DATABASE_URL`; otherwise `gateway_session_routes` cannot resolve session routing and file/text delivery to OneBot and other adapters will fail.
 
@@ -267,7 +264,7 @@ The system maintains three layers of conversation data:
    - Not a business IR.
 
 Current boundary rules:
-- `MemoryProvider.get_history()` returns `list[ChatHistoryItem]` directly.
+- `PersistentMemory.get_history()` returns `list[ChatHistoryItem]` directly.
 - `TurnContextBuilder` separates the current `user_turn` from history.
 - `LlmMessageAssembler` handles `IR → LlmChatMessage`.
 - `to_openai_messages(...)` is the final provider serialization boundary.
@@ -388,7 +385,7 @@ Visibility: `always_enable_planner: false`, `always_enable_subagent: false`. The
 7. Rewrote the Planner system prompt to make "delegation is the default and required path" explicit.
 8. Execution capability group name unified as `CoreOperations`; enabled per sub-session based on routing results.
 9. Introduced the five-stage Hook pipeline and typed payload protocol, allowing the capability system to intercept prompt construction, retrieval, compression, routing, and post-tool processing.
-10. `MemoryProvider` tightened to typed IR boundary: `get_history()` returns `ChatHistoryItem`; `query_memory` has been removed.
+10. `PersistentMemory` is the typed IR boundary for history: `get_history()` returns `ChatHistoryItem`; `query_memory` has been removed.
 11. `TurnRequest.from_legacy(...)` removed; callers construct typed `TurnRequest` directly.
 12. Main/sub Planner differences extracted to `turn_policy.py`, reducing `_is_sub_session(...)` branch proliferation.
 13. `TurnContextBuilder` now explicitly extracts `user_turn`; the current-turn user input is no longer implicitly at the tail of `history_items`.
@@ -419,9 +416,10 @@ The user-facing entry point has been migrated to a standalone Gateway process; t
 
 - **Business process**: `SessionEventBus` / `RuntimeSessionScheduler` / `Planner` / `PersistentMemory` / DB
   - Only exposes: `/healthz` + internal `WebSocket Bridge` (default `GET /internal/gateway/ws`)
-- **Gateway process**: external HTTP API + OneBot adapter
-  - Exposes: `/v1/sessions` / `/v1/sessions/{session_id}/chat` / `/v1/files` / `/v1/files/{file_id}` etc.
-  - Communicates with Business via `WsBridgeClient`; protocol documented in [`docs/GATEWAY_ENVELOPE.md`](docs/GATEWAY_ENVELOPE.md)
+- **Gateway process**: user-facing adapters (web WebSocket, OneBot, etc.)
+  - **Web UI** uses a single authenticated WebSocket at `/v1/ws` on the Gateway (JSON `op` / `ack` / `push`); it does not use separate REST chat endpoints on the Gateway for normal operation.
+  - Communicates with Business via `WsBridgeClient`; bridge frame layout is in [`docs/GATEWAY_ENVELOPE.md`](docs/GATEWAY_ENVELOPE.md).
+  - **Runtime control envelopes** (telemetry, session summaries, **tool call / tool result**, etc.) share one schema in [`fairyclaw/core/gateway_protocol/control_envelope.py`](fairyclaw/core/gateway_protocol/control_envelope.py); wire format for web pushes is summarized in [`fairyclaw/core/gateway_protocol/GATEWAY_RUNTIME_PROTOCOL.md`](fairyclaw/core/gateway_protocol/GATEWAY_RUNTIME_PROTOCOL.md). Business-side [`fairyclaw/bridge/user_gateway.py`](fairyclaw/bridge/user_gateway.py) (`UserGateway`) pushes assistant text, files, and `tool_call` / `tool_result` events over the bridge so the web client can render tool lifecycle without scraping assistant text.
 
 Important constraints:
 - The Business process no longer implements `callback_url` or any external HTTP callback delivery.

@@ -13,7 +13,7 @@ from fairyclaw.core.agent.context.history_ir import SessionMessageBlock, Session
 from fairyclaw.core.capabilities.models import ToolContext
 from fairyclaw.core.domain import ContentSegment
 from fairyclaw.core.events.bus import EventType
-from fairyclaw.core.events.runtime import publish_runtime_event
+from fairyclaw.core.events.runtime import get_user_gateway, publish_runtime_event
 from fairyclaw.core.agent.session.global_state import bind_sub_session, get_or_create_subtask_state
 from fairyclaw.core.agent.session.memory import PersistentMemory
 from fairyclaw.infrastructure.database.models import FileModel, GatewaySessionRouteModel, SessionModel
@@ -148,14 +148,22 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
             return f"Error: Task delegation failed while validating attachments: {e}"
 
     sub_session_id = _make_sub_session_id(main_session_id)
+    short_instruction = instruction.replace("\n", " ").strip()
+    if len(short_instruction) > 80:
+        short_instruction = short_instruction[:80] + "…"
 
     try:
         async with AsyncSessionLocal() as local_db:
             sub_session_model = SessionModel(
                 id=sub_session_id,
                 platform="sub_agent",
-                title=f"Sub-agent of {main_session_id}",
-                meta={"parent_session_id": main_session_id},
+                title=f"{task_type} | {short_instruction}",
+                meta={
+                    "parent_session_id": main_session_id,
+                    "task_type": str(task_type),
+                    "instruction": instruction,
+                    "subtask_status": f"running:{task_type}",
+                },
             )
             local_db.add(sub_session_model)
             local_db.add(
@@ -291,6 +299,9 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
     state.register_task(sub_session_id, instruction, time.time())
     bind_sub_session(main_session_id, sub_session_id)
     state.update_status(sub_session_id, f"running:{task_type}")
+    uwg = get_user_gateway()
+    if uwg is not None:
+        await uwg.emit_subagent_tasks_snapshot(main_session_id)
     logger.info(
         "Sub-agent startup requested: main_session=%s, sub_session=%s, task_type=%s, selected_groups=%s",
         main_session_id,
@@ -314,6 +325,16 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
     )
     if not published:
         state.mark_terminal(sub_session_id, "failed", "Runtime bus unavailable for sub-task wakeup.")
+        try:
+            async with AsyncSessionLocal() as db:
+                sub_session = await db.get(SessionModel, sub_session_id)
+                if sub_session and isinstance(sub_session.meta, dict):
+                    meta = dict(sub_session.meta)
+                    meta["subtask_status"] = "failed"
+                    sub_session.meta = meta
+                    await db.commit()
+        except Exception as e:
+            logger.warning("Failed to persist failed subtask status for %s: %s", sub_session_id, e)
         logger.error(
             "Sub-agent startup failed: main_session=%s, sub_session=%s, reason=runtime_bus_unavailable",
             main_session_id,
