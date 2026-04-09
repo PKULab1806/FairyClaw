@@ -254,6 +254,28 @@ def _pick_source(repo_config_dir: Path | None, name: str, example_name: str) -> 
     return None
 
 
+def _bundled_config_template(name: str) -> Path | None:
+    """Shipped copies of repo `config/*.example` for wheel installs / unknown cwd."""
+    p = package_dir() / "config_templates" / name
+    return p if p.exists() else None
+
+
+def _llm_yaml_missing_profiles(path: Path) -> bool:
+    """True if file is missing usable profile entries (e.g. old buggy cold start wrote profiles: {})."""
+    try:
+        import yaml
+
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception:
+        return True
+    if not isinstance(data, dict):
+        return True
+    profiles = data.get("profiles")
+    if not isinstance(profiles, dict) or not profiles:
+        return True
+    return False
+
+
 def _sync_runtime_config(runtime_home: Path, no_sync_config: bool) -> tuple[Path, dict[str, str]]:
     runtime_config_dir = runtime_home / "config"
     runtime_config_dir.mkdir(parents=True, exist_ok=True)
@@ -272,12 +294,26 @@ def _sync_runtime_config(runtime_home: Path, no_sync_config: bool) -> tuple[Path
     if not no_sync_config:
         if src_env is not None:
             shutil.copy2(src_env, env_target)
-        elif not env_target.exists():
-            env_target.write_text("", encoding="utf-8")
+        else:
+            bundled_env = _bundled_config_template("fairyclaw.env.example")
+            if bundled_env is not None and not env_target.exists():
+                shutil.copy2(bundled_env, env_target)
+            elif not env_target.exists():
+                env_target.write_text("", encoding="utf-8")
         if src_llm is not None:
             shutil.copy2(src_llm, llm_target)
-        elif not llm_target.exists():
-            llm_target.write_text("default_profile: main\nprofiles: {}\n", encoding="utf-8")
+        else:
+            bundled_llm = _bundled_config_template("llm_endpoints.yaml.example")
+            need_bundled_llm = not llm_target.exists() or (
+                bundled_llm is not None and _llm_yaml_missing_profiles(llm_target)
+            )
+            if bundled_llm is not None and need_bundled_llm:
+                shutil.copy2(bundled_llm, llm_target)
+            elif not llm_target.exists():
+                raise RuntimeError(
+                    "Missing LLM endpoints config and bundled template; reinstall fairyclaw or "
+                    "provide config/llm_endpoints.yaml (or llm_endpoints.yaml.example)."
+                )
 
     values = _parse_env_file(env_target)
     return runtime_config_dir, values

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fairyclaw"
-version = "0.1.1"
+version = "0.1.2"
 description = "FairyClaw server-side agent runtime"
 requires-python = ">=3.10"
 dependencies = [
@@ -38,7 +38,7 @@ fairyclaw = "fairyclaw.cli:main"
 packages = ["fairyclaw"]
 
 [tool.setuptools.package-data]
-fairyclaw = ["web_dist/**"]
+fairyclaw = ["web_dist/**", "config_templates/**"]
 
 [tool.uvicorn]
 factory = false
