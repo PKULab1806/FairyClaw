@@ -535,6 +535,18 @@ def _start(args: argparse.Namespace) -> int:
         if key and value and key not in env:
             env[key] = value
 
+    # fairyclaw.env often contains relative paths like ./config/llm_endpoints.yaml. Those merge
+    # above and would otherwise win over setdefault(), making the runtime load the repo copy (or
+    # nothing) instead of ~/.fairyclaw — pin authoritative paths for this command.
+    runtime_data_dir = (runtime_home / "data").resolve()
+    runtime_llm_path = (runtime_config_dir / "llm_endpoints.yaml").resolve()
+    env["FAIRYCLAW_DATA_DIR"] = str(runtime_data_dir)
+    env["FAIRYCLAW_LLM_ENDPOINTS_CONFIG_PATH"] = str(runtime_llm_path)
+    if "FAIRYCLAW_DATABASE_URL" not in os.environ:
+        env["FAIRYCLAW_DATABASE_URL"] = f"sqlite+aiosqlite:///{runtime_data_dir / 'fairyclaw.db'}"
+    if "FAIRYCLAW_LOG_FILE_PATH" not in os.environ:
+        env["FAIRYCLAW_LOG_FILE_PATH"] = str(runtime_data_dir / "logs" / "fairyclaw.log")
+
     business_port = args.business_port
     env["FAIRYCLAW_HOST"] = "0.0.0.0"
     env["FAIRYCLAW_PORT"] = str(business_port)
@@ -542,8 +554,6 @@ def _start(args: argparse.Namespace) -> int:
     env["FAIRYCLAW_GATEWAY_PORT"] = env.get("FAIRYCLAW_GATEWAY_PORT", "8081")
     env["FAIRYCLAW_GATEWAY_BRIDGE_URL"] = f"ws://127.0.0.1:{business_port}/internal/gateway/ws"
     env["FAIRYCLAW_API_TOKEN"] = token
-    env.setdefault("FAIRYCLAW_DATA_DIR", str((runtime_home / "data").resolve()))
-    env.setdefault("FAIRYCLAW_LLM_ENDPOINTS_CONFIG_PATH", str((runtime_config_dir / "llm_endpoints.yaml").resolve()))
 
     gateway_port = int(env["FAIRYCLAW_GATEWAY_PORT"])
     _ensure_ports_free_or_kill(
