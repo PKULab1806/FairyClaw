@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import json
 import os
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, cast
 
 from pydantic import BaseModel, Field
@@ -55,10 +56,19 @@ class SafeFilesystemPath:
     def is_within_root(self) -> bool:
         """Check whether target path is inside allowed root.
 
+        Uses path containment (not string prefix alone) so a root of ``/`` works:
+        ``startswith(root + sep)`` would require paths to begin with ``//``, which wrongly
+        rejects every normal absolute path on POSIX.
+
         Returns:
             bool: True when path is equal to root or its descendant.
         """
-        return self.path == self.root or self.path.startswith(f"{self.root}{os.sep}")
+        try:
+            p = Path(self.path)
+            r = Path(self.root)
+            return p == r or p.is_relative_to(r)
+        except (OSError, ValueError):
+            return False
 
     def access_denied_error(self) -> str:
         """Build standard access-denied error message.
@@ -66,7 +76,11 @@ class SafeFilesystemPath:
         Returns:
             str: Human-readable permission error text.
         """
-        return f"Error: Access denied. Path {self.path} is not within allowed directory {self.root}"
+        return (
+            f"Path {self.path!r} is outside FAIRYCLAW_FILESYSTEM_ROOT_DIR={self.root!r}. "
+            "Filesystem tools only work under that directory; set it in config/fairyclaw.env "
+            "to a folder that contains the paths you want the agent to use (for example your checkout root)."
+        )
 
 
 @dataclass(frozen=True)
