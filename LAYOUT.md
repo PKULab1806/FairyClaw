@@ -164,8 +164,9 @@ Pluggable capability groups. Each subdirectory is a group:
 | `core_ops/` | File system tools, Python execution, shell commands, file export. |
 | `web_tools/` | Web search, page fetch, file download. |
 | `sourced_research/` | Citation-backed research pipeline for sub-agents: `find_evidence_sources` → `extract_evidence_excerpt` → `format_answer_with_citations`. Not always-enabled; selected by `ToolRouter` for tasks requiring verifiable sources. |
-| `memory_hooks/` | Hybrid memory extraction and context injection hooks. |
-| `rag_hooks/` | RAG retrieval hook (before_llm_call). |
+| `session_memory/` | Unified memory system: memory-file tools (`USER.md`/`SOUL.md`/`MEMORY.md`), retrieval + gap-repair injection, and ASMR-style threshold extraction hooks. |
+| `memory_hooks/` | Removed (replaced by `session_memory/`). |
+| `rag_hooks/` | Removed (replaced by `session_memory/`). |
 | `compression_hooks/` | Context compression hook to fit token budgets. |
 | `routing_hooks/` | Turn routing hook for sub-agent group selection. |
 | `runtime_event_hooks/` | Event-driven hooks (e.g. `file_upload_received`). |

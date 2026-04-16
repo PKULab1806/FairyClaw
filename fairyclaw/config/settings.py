@@ -24,14 +24,14 @@ class Settings(BaseSettings):
     )
 
     api_token: str = "sk-fairyclaw-dev-token"
-    database_url: str = "sqlite+aiosqlite:///./data/fairyclaw.db"
-    data_dir: str = "./data"
+    database_url: str = Field(default_factory=locations.default_database_url)
+    data_dir: str = Field(default_factory=locations.default_data_dir)
     host: str = "0.0.0.0"
     port: int = 16000
     llm_endpoints_config_path: str = Field(default_factory=locations.default_llm_endpoints_config_path)
     filesystem_root_dir: str | None = None
     log_level: str = "INFO"
-    log_file_path: str = "./data/logs/fairyclaw.log"
+    log_file_path: str = Field(default_factory=locations.default_log_file_path)
     log_to_stdout: bool = False
     capabilities_dir: str = Field(default_factory=locations.default_capabilities_dir)
     execution_timeout_seconds: int = 30

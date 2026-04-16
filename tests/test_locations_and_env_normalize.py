@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from fairyclaw.config import env_normalize, locations
+from fairyclaw.config.settings import Settings
 
 
 def test_resolve_config_dir_prefers_cwd_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -57,3 +58,53 @@ def test_normalize_fairyclaw_env_file_writes_absolute_paths(tmp_path: Path) -> N
     assert str((anchor / "data").resolve()) in text
     assert str((anchor / "capabilities").resolve()) in text
     assert "FAIRYCLAW_API_TOKEN=x" in text
+
+
+def test_default_paths_follow_state_root_in_non_dev_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("FAIRYCLAW_HOME", str(state_root))
+    monkeypatch.delenv("FAIRYCLAW_CONFIG_DIR", raising=False)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.chdir(empty)
+
+    assert locations.resolve_config_dir() == (state_root / "config").resolve()
+    assert locations.default_data_dir() == str((state_root / "data").resolve())
+    assert locations.default_capabilities_dir() == str((state_root / "capabilities").resolve())
+    assert locations.default_log_file_path() == str((state_root / "data" / "logs" / "fairyclaw.log").resolve())
+    assert locations.default_database_url().startswith("sqlite+aiosqlite:////")
+    assert str((state_root / "data" / "fairyclaw.db").resolve()) in locations.default_database_url()
+
+
+def test_default_paths_follow_repo_anchor_in_dev_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proj = tmp_path / "proj"
+    cfg = proj / "config"
+    cfg.mkdir(parents=True)
+    monkeypatch.chdir(proj)
+    monkeypatch.delenv("FAIRYCLAW_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("FAIRYCLAW_HOME", raising=False)
+
+    assert locations.resolve_config_dir() == cfg.resolve()
+    assert locations.default_data_dir() == str((proj / "data").resolve())
+    assert locations.default_capabilities_dir() == str((proj / "capabilities").resolve())
+
+
+def test_settings_defaults_are_aligned_with_locations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("FAIRYCLAW_HOME", str(state_root))
+    monkeypatch.delenv("FAIRYCLAW_CONFIG_DIR", raising=False)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.chdir(empty)
+
+    s = Settings(_env_file=None)
+    assert s.data_dir == str((state_root / "data").resolve())
+    assert s.capabilities_dir == str((state_root / "capabilities").resolve())
+    assert s.log_file_path == str((state_root / "data" / "logs" / "fairyclaw.log").resolve())
+    assert "fairyclaw.db" in s.database_url

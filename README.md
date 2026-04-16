@@ -48,6 +48,7 @@ fairyclaw start
 | **Git clone** (usual dev) | **`./config`** when that folder exists in the current working directory | Parent of `config/` (often the repo root) |
 
 Override config location with **`FAIRYCLAW_CONFIG_DIR`** if needed.
+Defaults for `FAIRYCLAW_DATA_DIR`, `FAIRYCLAW_DATABASE_URL`, `FAIRYCLAW_CAPABILITIES_DIR`, and `FAIRYCLAW_LOG_FILE_PATH` are derived from that same root (`<root>/data`, `<root>/data/fairyclaw.db`, `<root>/capabilities`, `<root>/data/logs/fairyclaw.log`).
 
 Set **`FAIRYCLAW_API_TOKEN`** before startup if you do not want the default dev token for WebSocket auth.
 

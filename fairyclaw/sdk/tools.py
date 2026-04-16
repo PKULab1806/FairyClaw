@@ -2,6 +2,7 @@
 # Copyright (c) 2026 FairyClaw contributors, PKU DS Lab
 """SDK re-exports: tool execution context and filesystem helpers."""
 
+from fairyclaw.config.locations import resolve_memory_root
 from fairyclaw.core.capabilities.models import (
     FileSystemListItem,
     SafeFilesystemPath,
@@ -20,4 +21,5 @@ __all__ = [
     "ToolResultMessage",
     "get_context_db",
     "resolve_safe_path",
+    "resolve_memory_root",
 ]

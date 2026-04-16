@@ -1,0 +1,104 @@
+{
+  "name": "SessionMemory",
+  "description": "Unified memory capability with memory files, retrieval, and extraction.",
+  "always_enable_planner": true,
+  "always_enable_subagent": true,
+  "manifest_version": "1.1",
+  "capabilities": [
+    {
+      "name": "read_memory_file",
+      "description": "Read one logical memory file by name (USER.md, SOUL.md, MEMORY.md).",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Logical memory file name. One of USER.md, SOUL.md, MEMORY.md."
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      "script": "read_memory_file.py",
+      "record_event": true
+    },
+    {
+      "name": "write_memory_file",
+      "description": "Replace one logical memory file with provided markdown content.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Logical memory file name. One of USER.md, SOUL.md, MEMORY.md."
+            },
+            "content": {
+              "type": "string",
+              "description": "Full markdown content."
+            }
+          },
+          "required": [
+            "name",
+            "content"
+          ]
+        }
+      },
+      "script": "write_memory_file.py",
+      "record_event": true
+    },
+    {
+      "name": "append_memory_file",
+      "description": "Append markdown content to one logical memory file.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Logical memory file name. One of USER.md, SOUL.md, MEMORY.md."
+            },
+            "content": {
+              "type": "string",
+              "description": "Markdown content to append."
+            }
+          },
+          "required": [
+            "name",
+            "content"
+          ]
+        }
+      },
+      "script": "append_memory_file.py",
+      "record_event": true
+    }
+  ],
+  "hooks": [
+    {
+      "name": "session_memory_pre_context",
+      "stage": "before_llm_call",
+      "script": "session_memory_pre_context.py",
+      "priority": 120,
+      "enabled": true,
+      "timeout_ms": 20000,
+      "on_error": "continue",
+      "config": {}
+    },
+    {
+      "name": "session_memory_extraction",
+      "stage": "after_llm_response",
+      "script": "session_memory_extraction.py",
+      "priority": 100,
+      "enabled": true,
+      "timeout_ms": 90000,
+      "on_error": "continue",
+      "config": {}
+    }
+  ]
+}

@@ -350,15 +350,16 @@ Visibility: `always_enable_planner: false`, `always_enable_subagent: false`. The
 - `compression_hooks`
   - Responsible for token budget control; compresses only `history_items`, then rebuilds `llm_messages` via `LlmMessageAssembler`.
   - Group-level config lives in `compression_hooks/config.yaml`.
-- `rag_hooks`
-  - Queries vector memory and injects extra system messages during `before_llm_call`.
-  - Vector store logic must be encapsulated within the capability group; do not push it into core/infrastructure abstractions.
-  - Group-level config lives in `rag_hooks/config.yaml`.
-- `memory_hooks`
-  - `memory_pre_context`: injects session summary anchors.
-  - `memory_extraction`: extracts long-term facts during `after_llm_response` and writes them to `rag_chunks`.
-  - Initial `memory_extraction` uses heuristic extraction, not LLM extraction.
-  - Group-level config lives in `memory_hooks/config.yaml`.
+- `session_memory`
+  - Unified memory capability group replacing legacy split `rag_hooks` + `memory_hooks`.
+  - `before_llm_call`: injects memory-file context into the first system prompt block (stable prefix) and writes/uses gap-repair summaries after compression.
+  - `after_llm_response`: runs heuristic extraction each turn and threshold-triggered Agentic Search and Memory Retrieval (ASMR) style extraction for structured memory updates.
+  - Memory files are logical names `USER.md` / `SOUL.md` / `MEMORY.md`; tooling maps names to `<memory_root>/<name>`.
+  - `memory_root` defaults to `path_anchor()` (repo/dev layout typically the project root; pip layout typically `~/.fairyclaw`) and can be overridden by `FAIRYCLAW_MEMORY_ROOT` (SDK export: `fairyclaw.sdk.tools.resolve_memory_root`).
+  - No vector store dependency in the default algorithm; memory is managed via file updates and prompt injection only.
+  - Group-level config lives in `session_memory/config.yaml` (optional typed runtime model in `session_memory/config.py`).
+- `rag_hooks` / `memory_hooks`
+  - Removed from active capability loading; all memory + retrieval logic has moved to `session_memory`.
 - Model config goes in `config/llm_endpoints.yaml`:
   - `embedding` profile: local embedding model.
   - `compaction_summarizer` profile: summary generation.

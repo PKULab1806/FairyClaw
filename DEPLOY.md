@@ -68,15 +68,15 @@ openssl rand -hex 32
 |---|---|---|
 | `FAIRYCLAW_HOST` | `0.0.0.0` | Business bind address. |
 | `FAIRYCLAW_PORT` | `16000` | Business port. Keep internal — do not expose directly. |
-| `FAIRYCLAW_DATABASE_URL` | `sqlite+aiosqlite:///./data/fairyclaw.db` | SQLite default. Set a PostgreSQL URL for production. |
-| `FAIRYCLAW_DATA_DIR` | `./data` | Directory for DB, logs, and uploaded files. |
+| `FAIRYCLAW_DATABASE_URL` | *(derived from root)* | SQLite default points to `<root>/data/fairyclaw.db` (absolute). Set a PostgreSQL URL for production. |
+| `FAIRYCLAW_DATA_DIR` | *(derived from root)* | Defaults to `<root>/data`, where `<root>` is config anchor (dev: repo anchor, non-dev: `FAIRYCLAW_HOME` / `~/.fairyclaw`). |
 | `FAIRYCLAW_HOME` | *(unset)* | State root; default `~/.fairyclaw` when `./config` is not used. |
 | `FAIRYCLAW_CONFIG_DIR` | *(unset)* | Explicit `config/` directory (overrides cwd `./config` and `FAIRYCLAW_HOME/config`). |
-| `FAIRYCLAW_CAPABILITIES_DIR` | `./capabilities` (bundled template) or `./fairyclaw/capabilities` (monorepo example) | Writable capability tree; materialized from the package seed on cold start. |
+| `FAIRYCLAW_CAPABILITIES_DIR` | *(derived from root)* | Defaults to `<root>/capabilities`; in monorepo dev you can explicitly set `./fairyclaw/capabilities`. |
 | `FAIRYCLAW_LLM_ENDPOINTS_CONFIG_PATH` | `./config/llm_endpoints.yaml` | Path to LLM provider config (resolved relative to the config parent). |
 | `FAIRYCLAW_FILESYSTEM_ROOT_DIR` | *(unset)* | Root directory that file-system tools can access. Required when using `fs_read`, `fs_write`, etc. |
 | `FAIRYCLAW_LOG_LEVEL` | `INFO` | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
-| `FAIRYCLAW_LOG_FILE_PATH` | `./data/logs/fairyclaw.log` | Log file path. |
+| `FAIRYCLAW_LOG_FILE_PATH` | *(derived from root)* | Defaults to `<root>/data/logs/fairyclaw.log`. |
 | `FAIRYCLAW_LOG_TO_STDOUT` | `false` | Also print logs to stdout (useful for Docker). |
 | `FAIRYCLAW_ENABLE_HOOK_RUNTIME` | `false` | Enable the five-stage Hook pipeline for capabilities. |
 | `FAIRYCLAW_CONTEXT_TOKEN_BUDGET` | `0` | Token budget for context compression hooks (0 = disabled). |

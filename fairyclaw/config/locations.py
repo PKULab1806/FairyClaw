@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import quote
 
 from fairyclaw.paths import package_dir
 
 _ENV_STATE_ROOT = "FAIRYCLAW_HOME"
 _ENV_CONFIG_DIR = "FAIRYCLAW_CONFIG_DIR"
+_ENV_MEMORY_ROOT = "FAIRYCLAW_MEMORY_ROOT"
 
 
 def resolve_state_root() -> Path:
@@ -73,6 +75,27 @@ def resolve_capabilities_dir(*, mkdir: bool = False) -> Path:
     return p.resolve()
 
 
+def resolve_memory_root(*, mkdir: bool = False) -> Path:
+    """Memory root directory for logical memory files.
+
+    Defaults to parent directory of ``FAIRYCLAW_DATA_DIR`` when present,
+    otherwise ``path_anchor()``. Can be overridden by
+    ``FAIRYCLAW_MEMORY_ROOT``.
+    """
+    raw = os.environ.get(_ENV_MEMORY_ROOT, "").strip()
+    if raw:
+        p = Path(raw).expanduser().resolve()
+    else:
+        data_dir = os.environ.get("FAIRYCLAW_DATA_DIR", "").strip()
+        if data_dir:
+            p = Path(data_dir).expanduser().resolve().parent
+        else:
+            p = path_anchor()
+    if mkdir:
+        p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 def default_llm_endpoints_config_path() -> str:
     return str((resolve_config_dir() / "llm_endpoints.yaml").resolve())
 
@@ -83,6 +106,16 @@ def default_capabilities_dir() -> str:
 
 def default_data_dir() -> str:
     return str(path_anchor() / "data")
+
+
+def default_database_url() -> str:
+    db_path = (Path(default_data_dir()) / "fairyclaw.db").resolve()
+    # sqlite URL requires four slashes for absolute path.
+    return "sqlite+aiosqlite:///" + quote(str(db_path))
+
+
+def default_log_file_path() -> str:
+    return str((Path(default_data_dir()) / "logs" / "fairyclaw.log").resolve())
 
 
 def settings_env_file_tuple() -> tuple[Path, ...]:

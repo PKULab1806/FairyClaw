@@ -108,7 +108,7 @@ class CapabilityRegistry:
                             self.tools[tool_def.name] = tool_def
                             if tool_def.script:
                                 script_path = (group_dir / "scripts" / tool_def.script).resolve()
-                                self._load_tool_executor(tool_def.name, script_path)
+                                self._load_tool_executor(tool_def.name, script_path, group_dir)
                         
                         # Register custom runtime events
                         for event_type_def in group.event_type_definitions:
@@ -179,7 +179,7 @@ class CapabilityRegistry:
                 )
         return None
 
-    def _load_tool_executor(self, tool_name: str, script_path: Path):
+    def _load_tool_executor(self, tool_name: str, script_path: Path, group_dir: Path):
         """Dynamically load execute() function from tool script.
 
         Args:
@@ -197,10 +197,15 @@ class CapabilityRegistry:
             return
 
         try:
-            module_name = f"capabilities.tools.{tool_name}"
+            scripts_dir = script_path.parent
+            pkg = "fairyclaw_cap_" + _sanitize_python_module_segment(group_dir.name)
+            tool_seg = _sanitize_python_module_segment(tool_name)
+            module_name = f"{pkg}.tool_{tool_seg}"
+            _ensure_hook_script_package(pkg, scripts_dir)
             spec = importlib.util.spec_from_file_location(module_name, script_path)
             if spec and spec.loader:
                 module = importlib.util.module_from_spec(spec)
+                module.__package__ = pkg
                 sys.modules[module_name] = module
                 spec.loader.exec_module(module)
                 

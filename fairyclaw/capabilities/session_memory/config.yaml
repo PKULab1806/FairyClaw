@@ -1,0 +1,14 @@
+extraction_profile: compaction_summarizer
+compaction_profile: compaction_summarizer
+
+gap_headroom_items: 4
+min_gap_repair_cut_items: 3
+compaction_max_history_items: 120
+summary_char_limit: 1800
+summary_min_reserve_tokens: 256
+
+extract_trigger_message_count: 8
+extract_trigger_token_count: 2500
+extract_trigger_tool_round_count: 3
+extract_cooldown_turns: 2
+min_confidence_to_write_user: 0.7
