@@ -352,8 +352,8 @@ Visibility: `always_enable_planner: false`, `always_enable_subagent: false`. The
   - Group-level config lives in `compression_hooks/config.yaml`.
 - `session_memory`
   - Unified memory capability group replacing legacy split `rag_hooks` + `memory_hooks`.
-  - `before_llm_call`: injects memory-file context into the first system prompt block (stable prefix) and writes/uses gap-repair summaries after compression.
-  - `after_llm_response`: runs heuristic extraction each turn and threshold-triggered Agentic Search and Memory Retrieval (ASMR) style extraction for structured memory updates.
+  - `before_llm_call`: injects memory-file context into the first system prompt block (stable prefix) and, after compression, injects gap-repair context for truncated history. Gap-repair state is **per session** under `<memory_root>/.session_gap_repair/` (not `MEMORY.md`); if the current slice is already covered by the previous headroom window, the prior note is reused without another LLM call; otherwise the summarizer receives the previous note as reference. Cross-session long-term memory remains in `USER.md` / `SOUL.md` / `MEMORY.md` only.
+  - `after_llm_response`: threshold-triggered Agentic Search and Memory Retrieval (ASMR) style extraction for structured updates to those memory files.
   - Memory files are logical names `USER.md` / `SOUL.md` / `MEMORY.md`; tooling maps names to `<memory_root>/<name>`.
   - `memory_root` defaults to `path_anchor()` (repo/dev layout typically the project root; pip layout typically `~/.fairyclaw`) and can be overridden by `FAIRYCLAW_MEMORY_ROOT` (SDK export: `fairyclaw.sdk.tools.resolve_memory_root`).
   - No vector store dependency in the default algorithm; memory is managed via file updates and prompt injection only.

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import replace
-from datetime import datetime, timezone
 
 from fairyclaw.core.agent.context.history_ir import ChatHistoryItem, SessionMessageBlock, ToolCallRound
 from fairyclaw.core.agent.hooks.protocol import BeforeLlmCallHookPayload, HookStageInput, HookStageOutput, HookStatus
@@ -13,7 +12,8 @@ from fairyclaw.infrastructure.database.session import AsyncSessionLocal
 from fairyclaw.infrastructure.llm.factory import create_llm_client
 from fairyclaw_plugins.session_memory.config import SessionMemoryRuntimeConfig
 
-from ._memory_files import append_memory_text, read_memory_text
+from ._gap_repair_state import load_gap_repair_state, save_gap_repair_state
+from ._memory_files import read_memory_text
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ async def execute_hook(
         blocks.append(file_block)
 
     gap_patch = await _build_gap_repair_patch(
+        session_id=hook_input.context.session_id,
         hook_input=hook_input,
         cfg=cfg,
     )
@@ -84,6 +85,7 @@ def _build_file_block(cfg: SessionMemoryRuntimeConfig) -> str:
 
 async def _build_gap_repair_patch(
     *,
+    session_id: str,
     hook_input: HookStageInput[BeforeLlmCallHookPayload],
     cfg: SessionMemoryRuntimeConfig,
 ) -> str:
@@ -101,29 +103,58 @@ async def _build_gap_repair_patch(
     if cut < max(1, int(cfg.min_gap_repair_cut_items)):
         return ""
     end = min(len(full_history), cut + cfg.gap_headroom_items)
+    state = load_gap_repair_state(session_id=session_id, memory_root=cfg.memory_root)
+    last_end = int(state.get("last_slice_exclusive_end", 0) or 0)
+    last_summary = str(state.get("last_summary", "") or "")
+
+    # If this turn's slice does not extend beyond the last summarized prefix, reuse
+    # the previous gap-repair note (headroom already covered) and skip another LLM call.
+    if end <= last_end and last_summary.strip():
+        return f"[GapRepairContext]\n{last_summary.strip()}\n[/GapRepairContext]"
+
     slice_items = full_history[:end]
-    summary = await _summarize_history_slice(slice_items=slice_items, cfg=cfg)
+    summary = await _summarize_history_slice(
+        slice_items=slice_items,
+        cfg=cfg,
+        previous_gap_repair_summary=last_summary.strip() or None,
+    )
     if not summary:
         return ""
 
-    stamp = datetime.now(timezone.utc).isoformat()
-    patch = f"## GapRepair {stamp}\n{summary}".strip()
     try:
-        append_memory_text(name="MEMORY.md", content=patch, memory_root=cfg.memory_root)
+        save_gap_repair_state(
+            session_id=session_id,
+            memory_root=cfg.memory_root,
+            last_slice_exclusive_end=end,
+            last_summary=summary,
+        )
     except Exception as exc:
-        logger.debug("gap repair append skipped: %s", exc)
+        logger.debug("gap repair state save skipped: %s", exc)
     return f"[GapRepairContext]\n{summary}\n[/GapRepairContext]"
 
 
-async def _summarize_history_slice(*, slice_items: list[ChatHistoryItem], cfg: SessionMemoryRuntimeConfig) -> str:
+async def _summarize_history_slice(
+    *,
+    slice_items: list[ChatHistoryItem],
+    cfg: SessionMemoryRuntimeConfig,
+    previous_gap_repair_summary: str | None = None,
+) -> str:
     transcript = _history_to_transcript(slice_items)
     if not transcript:
         return ""
+    prior_block = ""
+    if previous_gap_repair_summary:
+        prior_block = (
+            "Previous gap-repair note for this session (same conversation; may overlap).\n"
+            "Update only if the transcript adds material beyond it; otherwise tighten without repeating.\n\n"
+            f"{previous_gap_repair_summary}\n\n---\n\n"
+        )
     prompt = (
-        "Summarize trimmed conversation context for memory gap repair.\n"
+        "Summarize trimmed conversation context for gap repair after context compression.\n"
         "Preserve key user constraints, decisions, failures, and unfinished tasks.\n"
         "Keep under 8 bullet points. Do not ask questions. Do not include emojis or chit-chat.\n"
         "Return plain concise markdown only.\n\n"
+        f"{prior_block}"
         f"{transcript}"
     )
     try:
