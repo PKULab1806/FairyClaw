@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import atexit
+import json
 import os
 import re
 import shutil
@@ -13,7 +15,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
+from urllib.parse import urlencode
 
 from fairyclaw.capabilities_seed import sync_capabilities, upgrade_capabilities
 from fairyclaw.config.env_normalize import normalize_fairyclaw_env_file
@@ -22,6 +25,7 @@ from fairyclaw.config.locations import (
     resolve_config_dir,
     resolve_capabilities_seed_dir,
 )
+from fairyclaw.core.gateway_protocol.models import new_frame_id
 from fairyclaw.paths import package_dir
 
 PROXY_ENV_KEYS = (
@@ -38,6 +42,7 @@ _NO_PROXY_LOOPBACK = "127.0.0.1,localhost,::1"
 
 # Child uvicorn processes: cleared on normal shutdown; used by atexit for abnormal exits.
 _TRACKED_CHILDREN: list[subprocess.Popen] = []
+_CLI_MAP_FILENAME = "cli_session_map.json"
 
 
 def _merge_no_proxy(env: dict[str, str]) -> None:
@@ -677,6 +682,236 @@ def _read_token(config_values: dict[str, str]) -> str:
     return os.getenv("FAIRYCLAW_API_TOKEN") or config_values.get("FAIRYCLAW_API_TOKEN", "sk-fairyclaw-dev-token")
 
 
+def _resolve_data_dir(project_root: Path, config_values: dict[str, str]) -> Path:
+    raw = (
+        os.getenv("FAIRYCLAW_DATA_DIR")
+        or config_values.get("FAIRYCLAW_DATA_DIR")
+        or str(project_root / "data")
+    )
+    p = Path(raw).expanduser()
+    if not p.is_absolute():
+        p = project_root / p
+    return p.resolve()
+
+
+def _cli_session_map_path(data_dir: Path) -> Path:
+    return data_dir / _CLI_MAP_FILENAME
+
+
+def _load_cli_session_map(map_path: Path) -> dict[str, str]:
+    try:
+        raw = map_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in data.items():
+        if isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip():
+            out[k.strip()] = v.strip()
+    return out
+
+
+def _save_cli_session_map(map_path: Path, mapping: dict[str, str]) -> None:
+    map_path.parent.mkdir(parents=True, exist_ok=True)
+    map_path.write_text(
+        json.dumps(dict(sorted(mapping.items())), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _default_gateway_ws_url(config_values: dict[str, str]) -> str:
+    host = os.getenv("FAIRYCLAW_GATEWAY_HOST") or config_values.get("FAIRYCLAW_GATEWAY_HOST") or "127.0.0.1"
+    port_raw = os.getenv("FAIRYCLAW_GATEWAY_PORT") or config_values.get("FAIRYCLAW_GATEWAY_PORT") or "8081"
+    try:
+        port = int(port_raw)
+    except ValueError:
+        port = 8081
+    if host == "0.0.0.0":
+        host = "127.0.0.1"
+    return f"ws://{host}:{port}/v1/ws"
+
+
+async def _ws_request_async(ws_url: str, token: str, op: str, body: dict[str, Any]) -> dict[str, Any]:
+    import importlib
+
+    req_id = new_frame_id("cli")
+    full_url = f"{ws_url}?{urlencode({'token': token})}"
+    ws_mod = importlib.import_module("websockets")
+    try:
+        async with ws_mod.connect(full_url) as ws:
+            await ws.send(json.dumps({"op": op, "id": req_id, "body": body}, ensure_ascii=False))
+            while True:
+                raw = await ws.recv()
+                msg = json.loads(raw)
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("id") != req_id:
+                    continue
+                if msg.get("op") == "ack":
+                    payload = msg.get("body")
+                    return payload if isinstance(payload, dict) else {}
+                if msg.get("op") == "error":
+                    raise RuntimeError(str(msg.get("message") or "gateway op failed"))
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError("Gateway not reachable. 请先执行 `fairyclaw start`。") from exc
+
+
+def _ws_request(config_values: dict[str, str], op: str, body: dict[str, Any]) -> dict[str, Any]:
+    token = _read_token(config_values)
+    ws_url = _default_gateway_ws_url(config_values)
+    return asyncio.run(_ws_request_async(ws_url, token, op, body))
+
+
+def _resolve_cli_session_id(target: str, mapping: dict[str, str]) -> str | None:
+    t = target.strip()
+    if not t:
+        return None
+    if t.startswith("sess_"):
+        return t
+    return mapping.get(t)
+
+
+def _format_history_rows(events: list[dict[str, Any]]) -> list[str]:
+    out: list[str] = []
+    for ev in events:
+        kind = str(ev.get("kind") or "")
+        ts = ev.get("ts_ms")
+        prefix = f"[{ts}] " if isinstance(ts, int) else ""
+        if kind == "session_event":
+            role = str(ev.get("role") or "assistant")
+            text = str(ev.get("text") or "")
+            out.append(f"{prefix}{role}: {text}")
+            continue
+        if kind == "operation_event":
+            tool = str(ev.get("tool_name") or "tool")
+            preview = str(ev.get("result_preview") or "")
+            out.append(f"{prefix}operation:{tool}: {preview}")
+            continue
+        out.append(f"{prefix}{json.dumps(ev, ensure_ascii=False)}")
+    return out
+
+
+def _cmd_help(_args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    print("FairyClaw benchmark CLI commands:")
+    print("  fairyclaw help")
+    print("  fairyclaw send <text> [--session <name>]")
+    print("  fairyclaw get <session_name_or_id>")
+    print("  fairyclaw session list")
+    print("  fairyclaw session rm <session_name_or_id>")
+    print("")
+    print("Notes:")
+    print("  - 需要先执行 `fairyclaw start`。")
+    print("  - --session 同名会复用同一会话；不带 --session 会新建匿名会话。")
+    print("  - session name 映射保存到 <FAIRYCLAW_DATA_DIR>/cli_session_map.json。")
+    print("")
+    parser.print_help()
+    return 0
+
+
+def _cmd_send(args: argparse.Namespace) -> int:
+    project_root, _config_dir, config_values = _prepare_project_config(no_sync_config=True)
+    data_dir = _resolve_data_dir(project_root, config_values)
+    map_path = _cli_session_map_path(data_dir)
+    mapping = _load_cli_session_map(map_path)
+
+    target_sid: str
+    session_name = (args.session or "").strip()
+    if session_name:
+        existing = mapping.get(session_name)
+        if existing:
+            target_sid = existing
+        else:
+            created = _ws_request(
+                config_values,
+                "session.create",
+                {"platform": "web", "title": session_name, "meta": {"source": "cli_benchmark"}},
+            )
+            target_sid = str(created.get("session_id") or "").strip()
+            if not target_sid:
+                raise RuntimeError("session.create succeeded but no session_id returned")
+            mapping[session_name] = target_sid
+            _save_cli_session_map(map_path, mapping)
+    else:
+        created = _ws_request(
+            config_values,
+            "session.create",
+            {"platform": "web", "title": None, "meta": {"source": "cli_benchmark"}},
+        )
+        target_sid = str(created.get("session_id") or "").strip()
+        if not target_sid:
+            raise RuntimeError("session.create succeeded but no session_id returned")
+
+    text = " ".join(args.text).strip()
+    if not text:
+        raise RuntimeError("text is required")
+    ack = _ws_request(
+        config_values,
+        "chat.send",
+        {"session_id": target_sid, "segments": [{"type": "text", "content": text}]},
+    )
+    print(json.dumps({"session_id": target_sid, "status": ack.get("status"), "message": ack.get("message")}, ensure_ascii=False))
+    return 0
+
+
+def _cmd_get(args: argparse.Namespace) -> int:
+    project_root, _config_dir, config_values = _prepare_project_config(no_sync_config=True)
+    map_path = _cli_session_map_path(_resolve_data_dir(project_root, config_values))
+    mapping = _load_cli_session_map(map_path)
+    sid = _resolve_cli_session_id(args.target, mapping)
+    if not sid:
+        raise RuntimeError(f"Unknown session name or id: {args.target}")
+    body = _ws_request(config_values, "sessions.history", {"session_id": sid, "limit": 500})
+    events = body.get("events")
+    rows = _format_history_rows(events if isinstance(events, list) else [])
+    for row in rows:
+        print(row)
+    return 0
+
+
+def _cmd_session_list(_args: argparse.Namespace) -> int:
+    project_root, _config_dir, config_values = _prepare_project_config(no_sync_config=True)
+    map_path = _cli_session_map_path(_resolve_data_dir(project_root, config_values))
+    mapping = _load_cli_session_map(map_path)
+    if not mapping:
+        print("(empty)")
+        return 0
+    for name, sid in sorted(mapping.items()):
+        print(f"{name}\t{sid}")
+    return 0
+
+
+def _cmd_session_rm(args: argparse.Namespace) -> int:
+    project_root, _config_dir, config_values = _prepare_project_config(no_sync_config=True)
+    data_dir = _resolve_data_dir(project_root, config_values)
+    map_path = _cli_session_map_path(data_dir)
+    mapping = _load_cli_session_map(map_path)
+    target = args.target.strip()
+    removed: list[str] = []
+    if target in mapping:
+        removed.append(target)
+        mapping.pop(target, None)
+    else:
+        for k, v in list(mapping.items()):
+            if v == target:
+                removed.append(k)
+                mapping.pop(k, None)
+    _save_cli_session_map(map_path, mapping)
+    if not removed:
+        print(json.dumps({"removed": 0, "target": target}, ensure_ascii=False))
+    else:
+        print(json.dumps({"removed": len(removed), "names": removed}, ensure_ascii=False))
+    return 0
+
+
 def _start(args: argparse.Namespace) -> int:
     project_root, config_dir, config_values = _prepare_project_config(no_sync_config=args.no_sync_config)
     data_dir = project_root / "data"
@@ -800,6 +1035,9 @@ def _cmd_capabilities_upgrade(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fairyclaw")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("help", help="Show benchmark CLI commands")
+
     start = sub.add_parser("start", help="Build frontend and run business+gateway")
     start.add_argument("--skip-build", action="store_true", help="Skip npm build")
     start.add_argument("--force-build", action="store_true", help="Force npm build when web/ is present")
@@ -856,21 +1094,49 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not keep .bak.<timestamp> backup of replaced groups",
     )
+
+    send = sub.add_parser("send", help="Send one text message for benchmark")
+    send.add_argument("text", nargs="+", help="Text content")
+    send.add_argument("--session", default=None, help="Named session to reuse/create")
+
+    get = sub.add_parser("get", help="Fetch full history by session name or session_id")
+    get.add_argument("target", help="session name or session_id")
+
+    sess = sub.add_parser("session", help="Session mapping management for benchmark CLI")
+    sess_sub = sess.add_subparsers(dest="session_command", required=True)
+    sess_sub.add_parser("list", help="List local session name mappings")
+    sess_rm = sess_sub.add_parser("rm", help="Remove local mapping by name or session_id")
+    sess_rm.add_argument("target", help="session name or session_id")
     return parser
 
 
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    if args.command == "start":
-        return _start(args)
-    if args.command == "capabilities":
-        if args.cap_command == "sync":
-            return _cmd_capabilities_sync(args)
-        if args.cap_command == "upgrade":
-            return _cmd_capabilities_upgrade(args)
-    parser.print_help()
-    return 2
+    try:
+        if args.command == "help":
+            return _cmd_help(args, parser)
+        if args.command == "start":
+            return _start(args)
+        if args.command == "send":
+            return _cmd_send(args)
+        if args.command == "get":
+            return _cmd_get(args)
+        if args.command == "session":
+            if args.session_command == "list":
+                return _cmd_session_list(args)
+            if args.session_command == "rm":
+                return _cmd_session_rm(args)
+        if args.command == "capabilities":
+            if args.cap_command == "sync":
+                return _cmd_capabilities_sync(args)
+            if args.cap_command == "upgrade":
+                return _cmd_capabilities_upgrade(args)
+        parser.print_help()
+        return 2
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr, flush=True)
+        return 1
 
 
 if __name__ == "__main__":
