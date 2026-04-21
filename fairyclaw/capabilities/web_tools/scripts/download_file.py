@@ -293,7 +293,7 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
         candidate_path = target_path
         if target_path.endswith(os.sep) or (os.path.exists(target_path) and os.path.isdir(target_path)):
             candidate_path = os.path.join(target_path, filename)
-        safe_path, error = resolve_safe_path(candidate_path, root_dir)
+        safe_path, error = resolve_safe_path(candidate_path, root_dir, context.workspace_root)
         if error or safe_path is None:
             return error or "Error: Invalid target_path."
         abs_path = safe_path.path

@@ -34,3 +34,28 @@ def test_resolve_safe_path_accepts_under_root_slash_posix() -> None:
     assert err is None
     assert safe is not None
     assert safe.is_within_root()
+
+
+def test_resolve_safe_path_accepts_workspace_root_when_outside_filesystem_root(tmp_path) -> None:
+    fs_root = tmp_path / "fs"
+    ws_root = tmp_path / "ws"
+    fs_root.mkdir(parents=True, exist_ok=True)
+    ws_root.mkdir(parents=True, exist_ok=True)
+    target = ws_root / "out.txt"
+
+    safe, err = resolve_safe_path(str(target), str(fs_root), str(ws_root))
+    assert err is None
+    assert safe is not None
+    assert safe.path == str(target.resolve())
+
+
+def test_resolve_safe_path_resolves_relative_path_against_workspace(tmp_path) -> None:
+    fs_root = tmp_path / "fs"
+    ws_root = tmp_path / "ws"
+    fs_root.mkdir(parents=True, exist_ok=True)
+    ws_root.mkdir(parents=True, exist_ok=True)
+
+    safe, err = resolve_safe_path("relative.txt", str(fs_root), str(ws_root))
+    assert err is None
+    assert safe is not None
+    assert safe.path == str((ws_root / "relative.txt").resolve())

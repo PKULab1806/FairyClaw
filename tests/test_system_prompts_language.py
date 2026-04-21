@@ -30,3 +30,14 @@ def test_sub_agent_prompt_adds_filesystem_constraint(monkeypatch) -> None:
     prompt = system_prompts.build_system_prompt(nesting_depth=1, task_type="code", prompt_language="en")
     assert "[FilesystemConstraint]" in prompt
     assert "FAIRYCLAW_FILESYSTEM_ROOT_DIR=/tmp/workspace" in prompt
+
+
+def test_prompt_adds_workspace_constraint_when_workspace_present() -> None:
+    prompt = system_prompts.build_system_prompt(
+        nesting_depth=0,
+        task_type="general",
+        prompt_language="en",
+        workspace_root="/tmp/my-ws",
+    )
+    assert "[WorkspaceConstraint]" in prompt
+    assert "workspace_root=/tmp/my-ws" in prompt

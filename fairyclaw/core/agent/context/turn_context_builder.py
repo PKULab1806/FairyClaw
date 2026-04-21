@@ -27,6 +27,7 @@ class TurnContextBuilder:
         user_segments: tuple[ContentSegment, ...],
         session_id: str,
         task_type: str,
+        workspace_root: str | None = None,
     ) -> tuple[list[LlmChatMessage], list[ChatHistoryItem], UserTurn | None]:
         """Build typed LLM messages plus typed history/user IR for one turn."""
         nesting_depth = session_id.count(SUB_SESSION_MARKER)
@@ -34,6 +35,7 @@ class TurnContextBuilder:
             nesting_depth=nesting_depth,
             task_type=task_type,
             prompt_language=settings.system_prompt_language,
+            workspace_root=workspace_root,
         )
         history_entries, user_entry = self._split_current_user_turn(
             history_items=list(history_items),

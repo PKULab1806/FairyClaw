@@ -28,9 +28,9 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
     
     # 1. Resolve Path
     root_dir = context.filesystem_root_dir
-    resolved_dir_path = str(dir_path) if isinstance(dir_path, str) and dir_path else str(root_dir or "")
+    resolved_dir_path = str(dir_path) if isinstance(dir_path, str) and dir_path else str(context.workspace_root or root_dir or "")
 
-    safe_path, error = resolve_safe_path(resolved_dir_path, root_dir)
+    safe_path, error = resolve_safe_path(resolved_dir_path, root_dir, context.workspace_root)
     if error or safe_path is None:
         return error or "Error: Invalid path."
     abs_path = safe_path.path

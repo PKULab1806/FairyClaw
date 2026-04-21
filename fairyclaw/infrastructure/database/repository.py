@@ -207,6 +207,41 @@ class SessionRepository:
 
         await _write_with_retry(self.db, _write)
 
+    async def _set_meta_value(self, session_id: str, key: str, value: Any) -> bool:
+        """Set one session meta key and persist atomically (internal helper)."""
+        model = await self.get(session_id)
+        if not model:
+            return False
+
+        async def _write() -> None:
+            meta = dict(model.meta or {})
+            meta[str(key)] = value
+            model.meta = meta
+            model.updated_at = utcnow()
+
+        await _write_with_retry(self.db, _write)
+        return True
+
+    async def _get_meta_value(self, session_id: str, key: str) -> Any | None:
+        """Get one session meta key value (internal helper)."""
+        model = await self.get(session_id)
+        if not model:
+            return None
+        meta = dict(model.meta or {})
+        return meta.get(str(key))
+
+    async def set_workspace_root(self, session_id: str, workspace_root: str) -> bool:
+        """Set session workspace root in session meta."""
+        return await self._set_meta_value(session_id, "workspace_root", workspace_root)
+
+    async def get_workspace_root(self, session_id: str) -> str | None:
+        """Get session workspace root from session meta."""
+        value = await self._get_meta_value(session_id, "workspace_root")
+        if not isinstance(value, str):
+            return None
+        value = value.strip()
+        return value or None
+
     async def list_all(self) -> List[SessionListItem]:
         """List all sessions with aggregated event statistics.
 

@@ -11,6 +11,7 @@ from fairyclaw.core.agent.session.memory import PersistentMemory
 from fairyclaw.core.events.bus import EventType, RuntimeEvent, SessionEventBus
 from fairyclaw.core.domain import ContentSegment, SegmentType
 from fairyclaw.core.gateway_protocol.models import GatewayInboundMessage
+from fairyclaw.core.runtime.session_runtime_store import get_session_runtime_store
 from fairyclaw.infrastructure.database.repository import EventRepository, FileRepository, SessionRepository
 from fairyclaw.infrastructure.database.session import AsyncSessionLocal
 from fairyclaw.infrastructure.files.file_kind import describe_user_upload_for_llm
@@ -71,14 +72,22 @@ class GatewayIngressService:
         meta: dict[str, Any] | None = None,
     ) -> str:
         """Create one business session without gateway routing metadata."""
+        raw_meta = dict(meta or {})
+        requested_workspace = raw_meta.get("workspace_root")
         async with AsyncSessionLocal() as db:
             repo = SessionRepository(db)
             model = await repo.create(
                 platform=platform,
                 title=title,
-                meta=dict(meta or {}),
+                meta=raw_meta,
             )
-            return model.id
+            session_id = model.id
+        workspace_root = requested_workspace if isinstance(requested_workspace, str) else None
+        await get_session_runtime_store().initialize_session(
+            session_id=session_id,
+            requested_workspace_root=workspace_root,
+        )
+        return session_id
 
     async def submit_message(self, message: GatewayInboundMessage, *, bus: SessionEventBus) -> None:
         """Persist inbound message and publish follow-up runtime event when required."""

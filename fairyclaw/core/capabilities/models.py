@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, cast
 
 from pydantic import BaseModel, Field
+from fairyclaw.core.runtime.session_runtime_store import SessionRuntimeContext
 
 @dataclass
 class ToolContext:
@@ -29,6 +30,8 @@ class ToolContext:
     planner: Any = None
     group_runtime_config: Any = None
     filesystem_root_dir: str | None = None
+    workspace_root: str | None = None
+    runtime_context: SessionRuntimeContext | None = None
 
 
 @dataclass(frozen=True)
@@ -39,7 +42,7 @@ class SafeFilesystemPath:
     root: str
 
     @classmethod
-    def resolve(cls, path: str, root_dir: str) -> "SafeFilesystemPath":
+    def resolve(cls, path: str, root_dir: str, base_dir: str | None = None) -> "SafeFilesystemPath":
         """Resolve and normalize target path and root path.
 
         Args:
@@ -49,7 +52,10 @@ class SafeFilesystemPath:
         Returns:
             SafeFilesystemPath: Normalized path/root pair.
         """
-        resolved_path = os.path.realpath(os.path.abspath(path))
+        target = path
+        if base_dir and not os.path.isabs(target):
+            target = os.path.join(base_dir, target)
+        resolved_path = os.path.realpath(os.path.abspath(target))
         resolved_root = os.path.realpath(os.path.abspath(root_dir))
         return cls(path=resolved_path, root=resolved_root)
 
@@ -183,22 +189,39 @@ class ToolResultMessage:
         return json.dumps(self.to_dict(), ensure_ascii=False)
 
 
-def resolve_safe_path(path: str, root_dir: str | None) -> tuple[SafeFilesystemPath | None, str | None]:
-    """Resolve and validate a path against configured filesystem root.
+def resolve_safe_path(
+    path: str,
+    root_dir: str | None,
+    workspace_root: str | None = None,
+) -> tuple[SafeFilesystemPath | None, str | None]:
+    """Resolve and validate a path against configured allowed roots.
 
     Args:
         path (str): Raw target path.
-        root_dir (str | None): Allowed root directory.
+        root_dir (str | None): Global filesystem root directory.
+        workspace_root (str | None): Session workspace root directory.
 
     Returns:
         tuple[SafeFilesystemPath | None, str | None]: Resolved safe path and optional error message.
     """
-    if not root_dir:
-        return None, "Error: FAIRYCLAW_FILESYSTEM_ROOT_DIR is not configured."
-    safe_path = SafeFilesystemPath.resolve(path, root_dir)
-    if not safe_path.is_within_root():
-        return None, safe_path.access_denied_error()
-    return safe_path, None
+    allowed_roots: list[str] = []
+    if isinstance(root_dir, str) and root_dir.strip():
+        allowed_roots.append(root_dir.strip())
+    if isinstance(workspace_root, str) and workspace_root.strip():
+        wr = workspace_root.strip()
+        if wr not in allowed_roots:
+            allowed_roots.append(wr)
+    if not allowed_roots:
+        return None, "Error: Neither FAIRYCLAW_FILESYSTEM_ROOT_DIR nor workspace_root is configured."
+
+    base_dir = workspace_root.strip() if isinstance(workspace_root, str) and workspace_root.strip() else None
+    for allowed_root in allowed_roots:
+        safe_path = SafeFilesystemPath.resolve(path, allowed_root, base_dir=base_dir)
+        if safe_path.is_within_root():
+            return safe_path, None
+
+    roots_msg = ", ".join(repr(os.path.realpath(os.path.abspath(r))) for r in allowed_roots)
+    return None, f"Path {path!r} is outside allowed roots: {roots_msg}."
 
 
 def _memory_with_repo_db(memory: Any) -> Any | None:

@@ -7,6 +7,7 @@ from typing import Any
 
 from fairyclaw.core.capabilities.registry import CapabilityRegistry
 from fairyclaw.core.capabilities.models import ToolContext
+from fairyclaw.core.runtime.session_runtime_store import get_session_runtime_store
 from fairyclaw.config.settings import settings as _settings
 
 
@@ -52,7 +53,12 @@ class ToolRuntime:
                 planner=planner,
                 group_runtime_config=group_runtime_config,
                 filesystem_root_dir=_settings.filesystem_root_dir,
+                workspace_root=None,
+                runtime_context=None,
             )
+            runtime_context = await get_session_runtime_store().get(session_id)
+            context.workspace_root = runtime_context.workspace_root
+            context.runtime_context = runtime_context
 
             try:
                 result = await tool_executor(arguments, context)

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 FairyClaw contributors, PKU DS Lab
 import asyncio
+import os
 from typing import Any, Dict
 from fairyclaw.sdk.group_runtime import expect_group_config
 from fairyclaw.sdk.subtasks import is_sub_session_cancel_requested
@@ -41,7 +42,8 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
         process = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            cwd=(context.workspace_root or context.filesystem_root_dir or os.getcwd()),
         )
 
         loop = asyncio.get_running_loop()

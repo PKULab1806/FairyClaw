@@ -34,7 +34,7 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
         return "Error: file_path is required."
 
     root_dir = context.filesystem_root_dir
-    safe_path, error = resolve_safe_path(file_path, root_dir)
+    safe_path, error = resolve_safe_path(file_path, root_dir, context.workspace_root)
     if error or safe_path is None:
         return error or "Error: Invalid path."
     abs_path = safe_path.path

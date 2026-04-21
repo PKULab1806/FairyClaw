@@ -182,7 +182,12 @@ def normalize_prompt_language(value: str | None) -> str:
     return PROMPT_LANGUAGE_EN
 
 
-def build_system_prompt(nesting_depth: int, task_type: str, prompt_language: str = PROMPT_LANGUAGE_EN) -> str:
+def build_system_prompt(
+    nesting_depth: int,
+    task_type: str,
+    prompt_language: str = PROMPT_LANGUAGE_EN,
+    workspace_root: str | None = None,
+) -> str:
     """Select system prompt template by session depth and task profile.
 
     Args:
@@ -193,8 +198,25 @@ def build_system_prompt(nesting_depth: int, task_type: str, prompt_language: str
         str: Prompt template for planner or sub-agent runtime.
     """
     language = normalize_prompt_language(prompt_language)
+    workspace_hint = ""
+    if isinstance(workspace_root, str) and workspace_root.strip():
+        if language == PROMPT_LANGUAGE_ZH:
+            workspace_hint = (
+                "[WorkspaceConstraint]\n"
+                f"- 默认工作目录是 workspace_root={workspace_root}。\n"
+                "- 允许访问路径：FAIRYCLAW_FILESYSTEM_ROOT_DIR 或 workspace_root。\n"
+                "- 临时文件优先写入 workspace_root。\n"
+            )
+        else:
+            workspace_hint = (
+                "[WorkspaceConstraint]\n"
+                f"- Default working directory is workspace_root={workspace_root}.\n"
+                "- Allowed paths are under FAIRYCLAW_FILESYSTEM_ROOT_DIR or workspace_root.\n"
+                "- Prefer creating temporary files under workspace_root.\n"
+            )
     if nesting_depth < 1:
-        return PLANNER_SYSTEM_PROMPT_ZH if language == PROMPT_LANGUAGE_ZH else PLANNER_SYSTEM_PROMPT_EN
+        base = PLANNER_SYSTEM_PROMPT_ZH if language == PROMPT_LANGUAGE_ZH else PLANNER_SYSTEM_PROMPT_EN
+        return base + ("\n" + workspace_hint if workspace_hint else "")
     filesystem_root_dir = settings.filesystem_root_dir
     filesystem_hint = ""
     if isinstance(filesystem_root_dir, str) and filesystem_root_dir.strip():
@@ -210,9 +232,9 @@ def build_system_prompt(nesting_depth: int, task_type: str, prompt_language: str
             )
     if task_type == TASK_TYPE_IMAGE:
         base = SUB_AGENT_IMAGE_PROMPT_ZH if language == PROMPT_LANGUAGE_ZH else SUB_AGENT_IMAGE_PROMPT_EN
-        return base + ("\n" + filesystem_hint if filesystem_hint else "")
+        return base + ("\n" + filesystem_hint if filesystem_hint else "") + ("\n" + workspace_hint if workspace_hint else "")
     if task_type == TASK_TYPE_CODE:
         base = SUB_AGENT_CODE_PROMPT_ZH if language == PROMPT_LANGUAGE_ZH else SUB_AGENT_CODE_PROMPT_EN
-        return base + ("\n" + filesystem_hint if filesystem_hint else "")
+        return base + ("\n" + filesystem_hint if filesystem_hint else "") + ("\n" + workspace_hint if workspace_hint else "")
     base = SUB_AGENT_GENERAL_PROMPT_ZH if language == PROMPT_LANGUAGE_ZH else SUB_AGENT_GENERAL_PROMPT_EN
-    return base + ("\n" + filesystem_hint if filesystem_hint else "")
+    return base + ("\n" + filesystem_hint if filesystem_hint else "") + ("\n" + workspace_hint if workspace_hint else "")

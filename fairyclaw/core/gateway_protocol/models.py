@@ -202,6 +202,7 @@ class SessionOpenPayload:
     adapter_key: str
     platform: str
     title: str | None = None
+    # Optional metadata; supports `workspace_root` for session workspace initialization.
     meta: dict[str, Any] = field(default_factory=dict)
     session_id: str | None = None
 

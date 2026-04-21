@@ -830,10 +830,14 @@ def _cmd_send(args: argparse.Namespace) -> int:
         if existing:
             target_sid = existing
         else:
+            meta: dict[str, Any] = {"source": "cli_benchmark"}
+            workspace_raw = str(getattr(args, "workspace", "") or "").strip()
+            if workspace_raw:
+                meta["workspace_root"] = workspace_raw
             created = _ws_request(
                 config_values,
                 "session.create",
-                {"platform": "web", "title": session_name, "meta": {"source": "cli_benchmark"}},
+                {"platform": "web", "title": session_name, "meta": meta},
             )
             target_sid = str(created.get("session_id") or "").strip()
             if not target_sid:
@@ -841,10 +845,14 @@ def _cmd_send(args: argparse.Namespace) -> int:
             mapping[session_name] = target_sid
             _save_cli_session_map(map_path, mapping)
     else:
+        meta: dict[str, Any] = {"source": "cli_benchmark"}
+        workspace_raw = str(getattr(args, "workspace", "") or "").strip()
+        if workspace_raw:
+            meta["workspace_root"] = workspace_raw
         created = _ws_request(
             config_values,
             "session.create",
-            {"platform": "web", "title": None, "meta": {"source": "cli_benchmark"}},
+            {"platform": "web", "title": None, "meta": meta},
         )
         target_sid = str(created.get("session_id") or "").strip()
         if not target_sid:
@@ -1098,6 +1106,7 @@ def build_parser() -> argparse.ArgumentParser:
     send = sub.add_parser("send", help="Send one text message for benchmark")
     send.add_argument("text", nargs="+", help="Text content")
     send.add_argument("--session", default=None, help="Named session to reuse/create")
+    send.add_argument("--workspace", default=None, help="Session workspace path (only used when creating a new session)")
 
     get = sub.add_parser("get", help="Fetch full history by session name or session_id")
     get.add_argument("target", help="session name or session_id")

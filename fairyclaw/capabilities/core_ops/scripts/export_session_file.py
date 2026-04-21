@@ -32,7 +32,7 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
         return "Error: file_id is required."
         
     if not target_path:
-        target_path = os.getcwd()
+        target_path = context.workspace_root or os.getcwd()
     root_dir = context.filesystem_root_dir
 
     db, error = get_context_db(context)
@@ -46,7 +46,7 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
         if not file_model:
             return f"Error: File with ID '{file_id}' not found in the current session."
             
-        safe_target, safe_error = resolve_safe_path(target_path, root_dir)
+        safe_target, safe_error = resolve_safe_path(target_path, root_dir, context.workspace_root)
         if safe_error or safe_target is None:
             return safe_error or "Error: Invalid target path."
         safe_target_path = safe_target.path
@@ -59,7 +59,7 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
             # Otherwise, use target_path as the full file path
             dest_path = safe_target_path
 
-        safe_dest, dest_error = resolve_safe_path(dest_path, root_dir)
+        safe_dest, dest_error = resolve_safe_path(dest_path, root_dir, context.workspace_root)
         if dest_error or safe_dest is None:
             return dest_error or "Error: Invalid export destination path."
         dest_path = safe_dest.path

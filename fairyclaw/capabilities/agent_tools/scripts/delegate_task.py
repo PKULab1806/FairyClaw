@@ -14,6 +14,7 @@ from fairyclaw.core.capabilities.models import ToolContext
 from fairyclaw.core.domain import ContentSegment
 from fairyclaw.core.events.bus import EventType
 from fairyclaw.core.events.runtime import get_user_gateway, publish_runtime_event
+from fairyclaw.core.runtime.session_runtime_store import get_session_runtime_store
 from fairyclaw.core.agent.session.global_state import bind_sub_session, get_or_create_subtask_state
 from fairyclaw.core.agent.session.memory import PersistentMemory
 from fairyclaw.infrastructure.database.models import FileModel, GatewaySessionRouteModel, SessionModel
@@ -136,6 +137,14 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
         return "Error: Maximum Sub-Agent nesting depth reached. You must complete this task yourself without delegating further."
 
     main_session_id = context.session_id
+    inherited_workspace_root = ""
+    if context.runtime_context is not None and context.runtime_context.workspace_root:
+        inherited_workspace_root = str(context.runtime_context.workspace_root).strip()
+    if not inherited_workspace_root:
+        try:
+            inherited_workspace_root = (await get_session_runtime_store().get(main_session_id)).workspace_root
+        except Exception:
+            inherited_workspace_root = ""
 
     if attachments:
         try:
@@ -160,6 +169,7 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
                 title=f"{task_type} | {short_instruction}",
                 meta={
                     "parent_session_id": main_session_id,
+                    "workspace_root": inherited_workspace_root,
                     "task_type": str(task_type),
                     "instruction": instruction,
                     "subtask_status": f"running:{task_type}",
