@@ -19,8 +19,9 @@ Python module: `fairyclaw.core.gateway_protocol.control_envelope`.
 | `CapabilityGroupPolicy` | Skill group flags for planner visibility |
 | `ToolCallEnvelope` | Before tool execution: `tool_call_id`, `tool_name`, `arguments` (object) |
 | `ToolResultEnvelope` | After execution: `tool_call_id`, `tool_name`, `ok`, optional `result`, `error_message`, `duration_ms` |
+| `TimerTickEnvelope` | Timer trigger delivered to planner: `job_id`, `mode`, `owner_session_id`, `creator_session_id`, `run_index`, optional `payload`, `next_fire_at_ms` |
 
-`event_type` for these: `tool_call` (`EVENT_TYPE_TOOL_CALL`) and `tool_result` (`EVENT_TYPE_TOOL_RESULT`).
+`event_type` for these includes `tool_call` (`EVENT_TYPE_TOOL_CALL`), `tool_result` (`EVENT_TYPE_TOOL_RESULT`), and `timer_tick` (`EVENT_TYPE_TIMER_TICK`).
 
 `LlmEndpointsDocument` is the JSON tree matching `config/llm_endpoints.yaml` (`default_profile`, `fallback_profile`, `profiles`).
 

@@ -59,6 +59,17 @@ export type LogEntry =
   | {
       id: string
       role: 'system'
+      kind: 'timer_tick'
+      jobId: string
+      mode: string
+      runIndex: number
+      payload: string
+      sessionId: string
+      ts: number
+    }
+  | {
+      id: string
+      role: 'system'
       kind: 'tool_call'
       toolCallId: string
       toolName: string

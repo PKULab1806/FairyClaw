@@ -6,6 +6,24 @@ import { useLocale } from '../contexts/LocaleContext'
 
 import './SessionsPage.css'
 
+const TIMER_TICK_PREFIX = '[TIMER_TICK]'
+const TIMER_PAYLOAD_PREFIX = '[TIMER_PAYLOAD]'
+
+function parseTimerTickPreview(text: string): { head: string; payload: string } | null {
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  if (lines.length === 0 || !lines[0].startsWith(TIMER_TICK_PREFIX)) {
+    return null
+  }
+  const payloadLine = lines.find((line) => line.startsWith(TIMER_PAYLOAD_PREFIX))
+  return {
+    head: lines[0],
+    payload: payloadLine ? payloadLine.slice(TIMER_PAYLOAD_PREFIX.length).trim() : '',
+  }
+}
+
 export function SessionsPage() {
   const { t } = useLocale()
   const navigate = useNavigate()
@@ -176,13 +194,16 @@ export function SessionsPage() {
                   if (kind === 'session_event') {
                     const role = String(event.role || 'assistant')
                     const text = String(event.text || '')
+                    const timer = parseTimerTickPreview(text)
                     return (
                       <li key={`preview_${idx}`} className="sessions-preview-item">
                         <div className="sessions-preview-item__meta">
-                          <span className="sessions-preview-item__role">{role}</span>
+                          <span className="sessions-preview-item__role">{timer ? 'timer_tick' : role}</span>
                           {ts ? <time>{ts}</time> : null}
                         </div>
-                        <pre className="sessions-preview-item__body">{text || ' '}</pre>
+                        <pre className="sessions-preview-item__body">
+                          {timer ? `${timer.head}${timer.payload ? `\n${timer.payload}` : ''}` : (text || ' ')}
+                        </pre>
                       </li>
                     )
                   }

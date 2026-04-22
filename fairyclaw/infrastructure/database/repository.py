@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import datetime as dt
 from typing import Any, Awaitable, Callable, List
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +22,7 @@ from fairyclaw.infrastructure.database.models import (
     GatewaySessionRouteModel,
     MemoryCompactionModel,
     MessageRouteModel,
+    TimerJobModel,
     OnebotSenderActiveModel,
     RagChunkModel,
     RagDocumentModel,
@@ -75,6 +76,15 @@ async def _write_with_retry(db: AsyncSession, write_op: Callable[[], Awaitable[N
                 f"Database write retry due to lock: attempt={attempt + 1}/{attempts} wait={wait_seconds:.3f}s"
             )
             await asyncio.sleep(wait_seconds)
+
+
+def _as_utc_datetime(value: dt.datetime | None) -> dt.datetime | None:
+    """Normalize datetime to timezone-aware UTC for safe comparisons."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=dt.timezone.utc)
+    return value.astimezone(dt.timezone.utc)
 
 @dataclass
 class SessionListItem:
@@ -867,3 +877,176 @@ class RouteRepository:
             .limit(limit)
         )
         return list((await self.db.execute(stmt)).scalars().all())
+
+
+class TimerJobRepository:
+    """Repository for timer runtime jobs (heartbeat/cron)."""
+
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def create(
+        self,
+        *,
+        owner_session_id: str,
+        creator_session_id: str,
+        mode: str,
+        next_fire_at: dt.datetime,
+        payload: str | None = None,
+        cron_expr: str | None = None,
+        interval_seconds: int | None = None,
+        deadline_at: dt.datetime | None = None,
+        max_runs: int | None = None,
+    ) -> TimerJobModel:
+        model = TimerJobModel(
+            owner_session_id=owner_session_id,
+            creator_session_id=creator_session_id,
+            mode=mode,
+            cron_expr=cron_expr,
+            interval_seconds=interval_seconds,
+            payload=str(payload or ""),
+            status="pending",
+            next_fire_at=next_fire_at,
+            deadline_at=deadline_at,
+            max_runs=max_runs,
+            run_count=0,
+            failure_count=0,
+            last_error=None,
+            claimed_by=None,
+            claimed_at=None,
+            active=True,
+        )
+
+        async def _write() -> None:
+            self.db.add(model)
+
+        await _write_with_retry(self.db, _write)
+        await self.db.refresh(model)
+        return model
+
+    async def get(self, job_id: str) -> TimerJobModel | None:
+        return await self.db.get(TimerJobModel, job_id)
+
+    async def list_jobs(
+        self,
+        *,
+        owner_session_id: str,
+        creator_session_id: str | None = None,
+        statuses: list[str] | None = None,
+        limit: int = 100,
+    ) -> list[TimerJobModel]:
+        stmt = select(TimerJobModel).where(TimerJobModel.owner_session_id == owner_session_id)
+        if creator_session_id:
+            stmt = stmt.where(TimerJobModel.creator_session_id == creator_session_id)
+        if statuses:
+            normalized = [s for s in statuses if isinstance(s, str) and s.strip()]
+            if normalized:
+                stmt = stmt.where(TimerJobModel.status.in_(normalized))
+        stmt = stmt.order_by(TimerJobModel.created_at.desc()).limit(max(1, int(limit)))
+        return list((await self.db.execute(stmt)).scalars().all())
+
+    async def claim_due_jobs(
+        self,
+        *,
+        now: dt.datetime,
+        worker_id: str,
+        limit: int = 20,
+        stale_claim_after_seconds: int = 120,
+    ) -> list[TimerJobModel]:
+        stale_at = now - dt.timedelta(seconds=max(1, stale_claim_after_seconds))
+        stmt = (
+            select(TimerJobModel)
+            .where(
+                and_(
+                    TimerJobModel.active.is_(True),
+                    TimerJobModel.status.in_(["pending", "running"]),
+                    TimerJobModel.next_fire_at <= now,
+                    or_(
+                        TimerJobModel.claimed_at.is_(None),
+                        TimerJobModel.claimed_at <= stale_at,
+                    ),
+                )
+            )
+            .order_by(TimerJobModel.next_fire_at.asc())
+            .limit(max(1, int(limit)))
+        )
+        rows = list((await self.db.execute(stmt)).scalars().all())
+        if not rows:
+            return []
+
+        async def _write() -> None:
+            for row in rows:
+                row.claimed_by = worker_id
+                row.claimed_at = now
+                if row.status == "pending":
+                    row.status = "running"
+                row.updated_at = utcnow()
+
+        await _write_with_retry(self.db, _write)
+        for row in rows:
+            await self.db.refresh(row)
+        return rows
+
+    async def update_after_run(
+        self,
+        *,
+        job_id: str,
+        now: dt.datetime,
+        next_fire_at: dt.datetime | None,
+        success: bool,
+        terminal_status: str | None = None,
+        last_error: str | None = None,
+    ) -> TimerJobModel | None:
+        model = await self.get(job_id)
+        if model is None:
+            return None
+
+        async def _write() -> None:
+            model.run_count = int(model.run_count or 0) + 1
+            if success:
+                model.failure_count = 0
+            else:
+                model.failure_count = int(model.failure_count or 0) + 1
+            model.last_error = (last_error or "").strip() or None
+            model.claimed_by = None
+            model.claimed_at = None
+
+            if terminal_status:
+                model.status = terminal_status
+                model.active = False
+            elif next_fire_at is None:
+                model.status = "completed"
+                model.active = False
+            else:
+                model.status = "running"
+                model.next_fire_at = next_fire_at
+
+            deadline_at = _as_utc_datetime(model.deadline_at)
+            now_utc = _as_utc_datetime(now) or now
+            if deadline_at is not None and deadline_at <= now_utc and model.active:
+                model.status = "completed"
+                model.active = False
+            if model.max_runs is not None and int(model.run_count or 0) >= int(model.max_runs) and model.active:
+                model.status = "completed"
+                model.active = False
+            model.updated_at = utcnow()
+
+        await _write_with_retry(self.db, _write)
+        await self.db.refresh(model)
+        return model
+
+    async def cancel(self, *, job_id: str) -> TimerJobModel | None:
+        model = await self.get(job_id)
+        if model is None:
+            return None
+
+        async def _write() -> None:
+            model.status = "cancelled"
+            model.active = False
+            model.claimed_by = None
+            model.claimed_at = None
+            model.updated_at = utcnow()
+
+        await _write_with_retry(self.db, _write)
+        await self.db.refresh(model)
+        return model

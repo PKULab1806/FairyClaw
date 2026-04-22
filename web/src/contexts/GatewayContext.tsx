@@ -80,9 +80,33 @@ const GatewayContext = createContext<GatewayContextValue | null>(null)
 type WsAckBody = Record<string, unknown>
 
 const SYSTEM_NOTIFICATION_PREFIX = '[System Notification]'
+const TIMER_TICK_PREFIX = '[TIMER_TICK]'
+const TIMER_PAYLOAD_PREFIX = '[TIMER_PAYLOAD]'
 
 function isSystemNotificationText(text: string): boolean {
   return text.trimStart().startsWith(SYSTEM_NOTIFICATION_PREFIX)
+}
+
+function parseTimerTickText(text: string): { mode: string; jobId: string; runIndex: number; payload: string } | null {
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  if (lines.length === 0 || !lines[0].startsWith(TIMER_TICK_PREFIX)) {
+    return null
+  }
+  const head = lines[0]
+  const modeMatch = head.match(/\bmode=([^\s]+)/)
+  const jobIdMatch = head.match(/\bjob_id=([^\s]+)/)
+  const runIndexMatch = head.match(/\brun_index=(\d+)/)
+  const payloadLine = lines.find((line) => line.startsWith(TIMER_PAYLOAD_PREFIX))
+  const payload = payloadLine ? payloadLine.slice(TIMER_PAYLOAD_PREFIX.length).trim() : ''
+  return {
+    mode: modeMatch ? modeMatch[1] : 'heartbeat',
+    jobId: jobIdMatch ? jobIdMatch[1] : '',
+    runIndex: runIndexMatch ? Number.parseInt(runIndexMatch[1], 10) || 1 : 1,
+    payload,
+  }
 }
 
 function mapHistoryToLogEntries(sessionId: string, events: unknown[]): LogEntry[] {
@@ -104,7 +128,20 @@ function mapHistoryToLogEntries(sessionId: string, events: unknown[]): LogEntry[
         idx++
         continue
       }
-      if (r === 'user') {
+      const timerTick = parseTimerTickText(text)
+      if (timerTick != null) {
+        out.push({
+          id: makeId(`hist_${idx}`),
+          role: 'system',
+          kind: 'timer_tick',
+          jobId: timerTick.jobId,
+          mode: timerTick.mode,
+          runIndex: timerTick.runIndex,
+          payload: timerTick.payload,
+          sessionId,
+          ts,
+        })
+      } else if (r === 'user') {
         out.push({
           id: makeId(`hist_${idx}`),
           role: 'user',
@@ -357,6 +394,20 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
             toolName,
             ok,
             detail,
+            sessionId: targetSession,
+            ts: now,
+          })
+          return
+        }
+        if (et === 'timer_tick') {
+          appendEntry({
+            id: makeId('timer'),
+            role: 'system',
+            kind: 'timer_tick',
+            jobId: String(payload.content?.job_id || ''),
+            mode: String(payload.content?.mode || 'heartbeat'),
+            runIndex: Number(payload.content?.run_index || 1),
+            payload: String(payload.content?.payload || ''),
             sessionId: targetSession,
             ts: now,
           })

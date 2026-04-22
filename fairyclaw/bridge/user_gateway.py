@@ -20,11 +20,13 @@ from fairyclaw.core.agent.session.session_role import resolve_session_role_polic
 from fairyclaw.core.gateway_protocol.control_envelope import (
     EVENT_TYPE_SUBAGENT_TASKS,
     EVENT_TYPE_TELEMETRY,
+    EVENT_TYPE_TIMER_TICK,
     EVENT_TYPE_TOOL_CALL,
     EVENT_TYPE_TOOL_RESULT,
     HeartbeatInfo,
     SubagentTaskState,
     TelemetrySnapshot,
+    TimerTickEnvelope,
     ToolCallEnvelope,
     ToolResultEnvelope,
     parse_tool_arguments_json,
@@ -233,6 +235,36 @@ class UserGateway:
                 session_id,
                 event_type=EVENT_TYPE_TOOL_RESULT,
                 content=res_env.to_content_dict(),
+            )
+        )
+
+    async def emit_timer_tick(
+        self,
+        session_id: str,
+        *,
+        job_id: str,
+        mode: str,
+        owner_session_id: str,
+        creator_session_id: str,
+        run_index: int,
+        payload: str = "",
+        next_fire_at_ms: int | None = None,
+    ) -> None:
+        """Notify web UI that a timer tick was injected for this session."""
+        env = TimerTickEnvelope(
+            job_id=job_id,
+            mode=mode,
+            owner_session_id=owner_session_id,
+            creator_session_id=creator_session_id,
+            run_index=max(1, int(run_index)),
+            payload=(payload or "").strip() or None,
+            next_fire_at_ms=next_fire_at_ms,
+        )
+        await self.push_outbound(
+            GatewayOutboundMessage.event(
+                session_id,
+                event_type=EVENT_TYPE_TIMER_TICK,
+                content=env.to_content_dict(),
             )
         )
 

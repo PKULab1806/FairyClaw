@@ -37,6 +37,8 @@
   "chat.toolResult": "{name} — {status}",
   "chat.toolOk": "成功",
   "chat.toolErr": "失败",
+  "chat.timerTick": "定时触发（{mode}）· 第 {run} 次",
+  "chat.timerJobId": "任务ID：{id}",
   "chat.backToMain": "返回主会话",
   "chat.subtaskPanelTitle": "子任务实时详情",
   "chat.subtaskEmptyTitle": "子任务暂无内容",

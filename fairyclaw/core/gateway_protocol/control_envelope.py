@@ -23,6 +23,7 @@ EVENT_TYPE_SESSION_SUMMARIES = "session_summaries"
 EVENT_TYPE_CONFIG_SNAPSHOT = "config_snapshot"
 EVENT_TYPE_TOOL_CALL = "tool_call"
 EVENT_TYPE_TOOL_RESULT = "tool_result"
+EVENT_TYPE_TIMER_TICK = "timer_tick"
 
 
 def _json_safe(value: Any) -> Any:
@@ -224,3 +225,19 @@ class ToolResultEnvelope:
             "duration_ms": self.duration_ms,
         }
         return _drop_none(body)
+
+
+@dataclass(frozen=True)
+class TimerTickEnvelope:
+    """Emitted when timer watchdog delivers one timer tick to a session."""
+
+    job_id: str
+    mode: str
+    owner_session_id: str
+    creator_session_id: str
+    run_index: int
+    payload: str | None = None
+    next_fire_at_ms: int | None = None
+
+    def to_content_dict(self) -> dict[str, Any]:
+        return _drop_none(asdict(self))

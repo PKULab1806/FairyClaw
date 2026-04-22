@@ -1,0 +1,130 @@
+{
+  "name": "TimerRuntime",
+  "description": "Timer runtime tools for heartbeat and cron scheduling. Supports sub-session creation while binding job ownership to the parent session.",
+  "always_enable_planner": true,
+  "always_enable_subagent": false,
+  "manifest_version": "1.1",
+  "capabilities": [
+    {
+      "name": "create_timer_job",
+      "description": "Create a timer job. Use mode=heartbeat with interval_seconds for short polling, or mode=cron with cron_expr (5-field cron). Sub-sessions can create jobs; ownership is bound to parent session.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["heartbeat", "cron"],
+              "description": "Timer mode."
+            },
+            "interval_seconds": {
+              "type": "integer",
+              "description": "Required when mode=heartbeat. Must be >= 2."
+            },
+            "cron_expr": {
+              "type": "string",
+              "description": "Required when mode=cron. Standard 5-field cron expression: minute hour day month weekday."
+            },
+            "payload": {
+              "type": "string",
+              "description": "Optional text payload injected on every timer tick."
+            },
+            "start_delay_seconds": {
+              "type": "integer",
+              "description": "Optional start delay in seconds."
+            },
+            "deadline_seconds": {
+              "type": "integer",
+              "description": "Optional max runtime window in seconds."
+            },
+            "max_runs": {
+              "type": "integer",
+              "description": "Optional max trigger count before auto-complete."
+            }
+          },
+          "required": ["mode"]
+        }
+      },
+      "script": "create_timer_job.py",
+      "record_event": true
+    },
+    {
+      "name": "list_timer_jobs",
+      "description": "List timer jobs. Main session lists all owned jobs; sub-session lists its own created jobs by default.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "statuses": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "Optional status filter."
+            },
+            "limit": {
+              "type": "integer",
+              "description": "Maximum number of rows to return (default 50)."
+            },
+            "include_all_owner_jobs": {
+              "type": "boolean",
+              "description": "When true, include all jobs under owner session. Ignored for sub-sessions by default."
+            }
+          }
+        }
+      },
+      "script": "list_timer_jobs.py",
+      "record_event": true
+    },
+    {
+      "name": "get_timer_job_state",
+      "description": "Get one timer job by id.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "description": "Timer job id."
+            }
+          },
+          "required": ["job_id"]
+        }
+      },
+      "script": "get_timer_job_state.py",
+      "record_event": true
+    },
+    {
+      "name": "stop_timer_job",
+      "description": "Cancel one timer job by id.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "description": "Timer job id."
+            }
+          },
+          "required": ["job_id"]
+        }
+      },
+      "script": "stop_timer_job.py",
+      "record_event": true
+    }
+  ],
+  "hooks": [
+    {
+      "name": "timer_runtime_prompt_guide",
+      "stage": "before_llm_call",
+      "script": "timer_runtime_prompt_hook.py",
+      "priority": 95,
+      "enabled": true,
+      "timeout_ms": 300,
+      "on_error": "continue",
+      "config": {}
+    }
+  ]
+}

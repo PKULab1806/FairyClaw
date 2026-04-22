@@ -37,6 +37,8 @@
   "chat.toolResult": "{name} — {status}",
   "chat.toolOk": "ok",
   "chat.toolErr": "failed",
+  "chat.timerTick": "Timer tick ({mode}) · run #{run}",
+  "chat.timerJobId": "job_id: {id}",
   "chat.backToMain": "Back to main session",
   "chat.subtaskPanelTitle": "Subtask live timeline",
   "chat.subtaskEmptyTitle": "No subtask events yet",

@@ -128,6 +128,22 @@ export function ChatPage() {
                       <pre className="msg-bubble__tool-args">{message.detail}</pre>
                     </div>
                   )}
+                  {'kind' in message && message.kind === 'timer_tick' && (
+                    <div className="msg-bubble__timer">
+                      <p className="msg-bubble__timer-head">
+                        {t('chat.timerTick', {
+                          mode: message.mode,
+                          run: String(message.runIndex),
+                        })}
+                      </p>
+                      <p className="msg-bubble__timer-meta">
+                        {t('chat.timerJobId', { id: message.jobId || '-' })}
+                      </p>
+                      {message.payload ? (
+                        <pre className="msg-bubble__tool-args">{message.payload}</pre>
+                      ) : null}
+                    </div>
+                  )}
                   {'files' in message && message.files.length > 0 && (
                     <ul className="msg-bubble__files">
                       {message.files.map((file) => (

@@ -5,7 +5,7 @@
 import datetime as dt
 import uuid
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, LargeBinary, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, LargeBinary, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 def utcnow() -> dt.datetime:
@@ -174,3 +174,29 @@ class MessageRouteModel(Base):
     decision: Mapped[dict] = mapped_column(JSON, default=dict)
     reason: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TimerJobModel(Base):
+    """Persisted timer job records for heartbeat/cron runtime."""
+
+    __tablename__ = "timer_jobs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: f"timer_{uuid.uuid4().hex[:24]}")
+    owner_session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), index=True)
+    creator_session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), index=True)
+    mode: Mapped[str] = mapped_column(String(16), default="heartbeat")
+    cron_expr: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    payload: Mapped[str] = mapped_column(String, default="")
+    status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    next_fire_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), index=True)
+    deadline_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    max_runs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    run_count: Mapped[int] = mapped_column(Integer, default=0)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(String, nullable=True)
+    claimed_by: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    claimed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
