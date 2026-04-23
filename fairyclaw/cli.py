@@ -817,7 +817,7 @@ def _format_history_rows(events: list[dict[str, Any]]) -> list[str]:
 def _cmd_help(_args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     print("FairyClaw benchmark CLI commands:")
     print("  fairyclaw help")
-    print("  fairyclaw send <text> [--session <name>]")
+    print("  fairyclaw send <text> [--session <name>] [--workspace <path>]")
     print("  fairyclaw agent --session <name> --message '...'   # 单进程，无需 `start`（Moltis 式）")
     print("  fairyclaw bench run --session <name> <text>...   # 需已 `fairyclaw start`")
     print("  fairyclaw get <session_name_or_id>")
@@ -826,8 +826,9 @@ def _cmd_help(_args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
     print("")
     print("Notes:")
     print("  - `send` / `bench` / `get` 需先 `fairyclaw start`；评测可单独用 `fairyclaw agent`。")
-    print("  - --session 同名会复用同一会话；不带 --session 会新建匿名会话。")
-    print("  - session name 映射保存到 <FAIRYCLAW_DATA_DIR>/cli_session_map.json。")
+    print("  - 相同 --session 会复用同一会话；不带 --session 会新建匿名会话。")
+    print("  - 新建会话时可用 --workspace 指定工作区路径；复用已存在会话时该参数会被忽略。")
+    print("  - session 名称与 session_id 的映射保存在 <FAIRYCLAW_DATA_DIR>/cli_session_map.json。")
     print("")
     parser.print_help()
     return 0
@@ -839,6 +840,17 @@ def _cmd_send(args: argparse.Namespace) -> int:
     map_path = _cli_session_map_path(data_dir)
     mapping = _load_cli_session_map(map_path)
 
+    workspace_raw = (getattr(args, "workspace", None) or "").strip()
+    workspace_path: str | None = None
+    if workspace_raw:
+        workspace_path = str(Path(workspace_raw).expanduser().resolve())
+
+    def _send_meta() -> dict[str, Any]:
+        meta: dict[str, Any] = {"source": "cli_benchmark"}
+        if workspace_path:
+            meta["workspace"] = workspace_path
+        return meta
+
     target_sid: str
     session_name = (args.session or "").strip()
     if session_name:
@@ -849,7 +861,11 @@ def _cmd_send(args: argparse.Namespace) -> int:
             created = _ws_request(
                 config_values,
                 "session.create",
-                {"platform": "web", "title": session_name, "meta": {"source": "cli_benchmark"}},
+                {
+                    "platform": "web",
+                    "title": session_name,
+                    "meta": _send_meta(),
+                },
             )
             target_sid = str(created.get("session_id") or "").strip()
             if not target_sid:
@@ -860,7 +876,11 @@ def _cmd_send(args: argparse.Namespace) -> int:
         created = _ws_request(
             config_values,
             "session.create",
-            {"platform": "web", "title": None, "meta": {"source": "cli_benchmark"}},
+            {
+                "platform": "web",
+                "title": None,
+                "meta": _send_meta(),
+            },
         )
         target_sid = str(created.get("session_id") or "").strip()
         if not target_sid:
@@ -1216,6 +1236,11 @@ def build_parser() -> argparse.ArgumentParser:
     send = sub.add_parser("send", help="Send one text message for benchmark")
     send.add_argument("text", nargs="+", help="Text content")
     send.add_argument("--session", default=None, help="Named session to reuse/create")
+    send.add_argument(
+        "--workspace",
+        default=None,
+        help="Only when creating a new session: workspace root path (ignored if --session reuses an existing name)",
+    )
 
     agent = sub.add_parser("agent", help="One-shot in-process run: no `start` (Moltis-style; loads planner+DB in this process)")
     agent.add_argument("--message", default=None, help="User message text")
