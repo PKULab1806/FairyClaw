@@ -1,0 +1,178 @@
+{
+  "name": "CodeRepairOps",
+  "description": "Structured repair workflow tools and hooks for reproduce-diagnose-patch-verify-report loops in code debugging tasks.",
+  "always_enable_planner": false,
+  "always_enable_subagent": false,
+  "manifest_version": "1.1",
+  "capabilities": [
+    {
+      "name": "repair_collect_evidence",
+      "description": "Collect structured debugging evidence by running commands or scanning logs/files. Use this as the first step in a repair loop.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["command", "log_scan", "file_snapshot"],
+              "description": "Evidence collection mode."
+            },
+            "command": {
+              "type": "string",
+              "description": "Command to execute when mode=command (for example pytest)."
+            },
+            "cwd": {
+              "type": "string",
+              "description": "Optional working directory (relative to workspace_root or absolute)."
+            },
+            "targets": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "Optional file targets for snapshot/log scanning."
+            },
+            "extract_patterns": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "Optional regex patterns for extracting failure lines."
+            },
+            "capture_limit": {
+              "type": "integer",
+              "description": "Maximum captured output lines.",
+              "default": 120
+            }
+          },
+          "required": ["mode"]
+        }
+      },
+      "script": "repair_collect_evidence.py",
+      "record_event": true
+    },
+    {
+      "name": "repair_run_verification",
+      "description": "Run structured verification checks such as command exit codes, file hash constraints, text assertions, and git ancestry checks.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "checks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {"type": "string"},
+                  "type": {
+                    "type": "string",
+                    "enum": ["command", "file_hash_unchanged", "text_contains", "text_first_line_startswith", "git_ancestor"]
+                  },
+                  "args": {"type": "object"}
+                },
+                "required": ["name", "type", "args"]
+              }
+            },
+            "stop_on_fail": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "required": ["checks"]
+        }
+      },
+      "script": "repair_run_verification.py",
+      "record_event": true
+    },
+    {
+      "name": "repair_write_artifacts",
+      "description": "Render and write standard repair artifacts such as progress.md, review.txt, and rca reports.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "artifact_type": {
+              "type": "string",
+              "enum": ["progress_md", "review_txt", "rca_md", "runtime_summary_json", "custom_text"]
+            },
+            "output_path": {
+              "type": "string",
+              "description": "Output file path (absolute or workspace-relative)."
+            },
+            "content": {
+              "type": "string",
+              "description": "Text content used by custom_text/review_txt/rca_md output."
+            }
+          },
+          "required": ["artifact_type", "output_path"]
+        }
+      },
+      "script": "repair_write_artifacts.py",
+      "record_event": true
+    },
+    {
+      "name": "repair_apply_unified_patch",
+      "description": "Apply unified diff style patch text to one file with strict context matching.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string",
+              "description": "Target file path."
+            },
+            "patch_text": {
+              "type": "string",
+              "description": "Unified diff/hunk text containing @@ and +/- lines."
+            }
+          },
+          "required": ["file_path", "patch_text"]
+        }
+      },
+      "script": "repair_apply_unified_patch.py",
+      "record_event": true
+    }
+  ],
+  "hooks": [
+    {
+      "name": "code_repair_before_llm_call",
+      "stage": "before_llm_call",
+      "script": "repair_before_llm_call.py",
+      "priority": 50,
+      "enabled": true,
+      "timeout_ms": 2000,
+      "on_error": "continue",
+      "config": {}
+    },
+    {
+      "name": "code_repair_after_llm_response",
+      "stage": "after_llm_response",
+      "script": "repair_after_llm_response.py",
+      "priority": 50,
+      "enabled": true,
+      "timeout_ms": 2000,
+      "on_error": "continue",
+      "config": {}
+    },
+    {
+      "name": "code_repair_before_tool_call",
+      "stage": "before_tool_call",
+      "script": "repair_before_tool_call.py",
+      "priority": 50,
+      "enabled": true,
+      "timeout_ms": 2000,
+      "on_error": "continue",
+      "config": {}
+    },
+    {
+      "name": "code_repair_after_tool_call",
+      "stage": "after_tool_call",
+      "script": "repair_after_tool_call.py",
+      "priority": 50,
+      "enabled": true,
+      "timeout_ms": 2000,
+      "on_error": "continue",
+      "config": {}
+    }
+  ]
+}
