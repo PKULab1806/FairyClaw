@@ -25,7 +25,6 @@ from fairyclaw.config.locations import (
     resolve_config_dir,
     resolve_capabilities_seed_dir,
 )
-from fairyclaw.bench_clawbench import run_clawbench_benchmark
 from fairyclaw.core.gateway_protocol.models import new_frame_id
 from fairyclaw.paths import package_dir
 
@@ -819,7 +818,6 @@ def _cmd_help(_args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
     print("  fairyclaw help")
     print("  fairyclaw send <text> [--session <name>] [--workspace <path>]")
     print("  fairyclaw agent --session <name> --message '...'   # one process, no `start` (Moltis-style)")
-    print("  fairyclaw bench run --session <name> <text>...   # requires `fairyclaw start` first")
     print("  fairyclaw get <session_name_or_id>")
     print("  fairyclaw session list")
     print("  fairyclaw session rm <session_name_or_id>")
@@ -848,7 +846,7 @@ def _cmd_send(args: argparse.Namespace) -> int:
     def _send_meta() -> dict[str, Any]:
         meta: dict[str, Any] = {"source": "cli_benchmark"}
         if workspace_path:
-            meta["workspace"] = workspace_path
+            meta["workspace_root"] = workspace_path
         return meta
 
     target_sid: str
@@ -896,68 +894,6 @@ def _cmd_send(args: argparse.Namespace) -> int:
     )
     print(json.dumps({"session_id": target_sid, "status": ack.get("status"), "message": ack.get("message")}, ensure_ascii=False))
     return 0
-
-
-def _cmd_bench_run(args: argparse.Namespace) -> int:
-    """Send one user message and block until session history is stable (for ClawBench v2)."""
-    project_root, _config_dir, config_values = _prepare_project_config(no_sync_config=True)
-    data_dir = _resolve_data_dir(project_root, config_values)
-    map_path = _cli_session_map_path(data_dir)
-    mapping = _load_cli_session_map(map_path)
-
-    session_name = (args.session or "").strip()
-    if not session_name:
-        raise RuntimeError("bench run requires --session <name> (use a stable id, e.g. ClawBench session_id)")
-
-    existing = mapping.get(session_name)
-    if existing:
-        target_sid = existing
-    else:
-        created = _ws_request(
-            config_values,
-            "session.create",
-            {
-                "platform": "web",
-                "title": session_name,
-                "meta": {"source": "clawbenchv2", "cli": "bench_run"},
-            },
-        )
-        target_sid = str(created.get("session_id") or "").strip()
-        if not target_sid:
-            raise RuntimeError("session.create succeeded but no session_id returned")
-        mapping[session_name] = target_sid
-        _save_cli_session_map(map_path, mapping)
-
-    text = " ".join(args.text).strip()
-    if not text:
-        raise RuntimeError("message text is required")
-
-    ack = _ws_request(
-        config_values,
-        "chat.send",
-        {"session_id": target_sid, "segments": [{"type": "text", "content": text}]},
-    )
-    if str(ack.get("status") or "").lower() in {"error", "failed"}:
-        raise RuntimeError(f"chat.send rejected: {ack!r}")
-
-    def _ws(op: str, body: dict[str, Any]) -> dict[str, Any]:
-        return _ws_request(config_values, op, body)
-
-    result = run_clawbench_benchmark(
-        ws_request=_ws,
-        session_id=target_sid,
-        timeout_sec=float(args.timeout),
-        idle_sec=float(args.idle_seconds),
-        poll_interval_sec=float(args.poll_interval),
-        min_wait_after_send_sec=float(args.min_wait_after_send),
-    )
-    out = {
-        "bench": "clawbenchv2",
-        "send_ack": ack,
-        **result,
-    }
-    print(json.dumps(out, ensure_ascii=False), flush=True)
-    return 0 if result.get("ok") else 1
 
 
 def _cmd_agent(args: argparse.Namespace) -> int:
@@ -1255,7 +1191,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent.add_argument(
         "--session",
         required=True,
-        help="Session key (e.g. ClawBench session_id); reuses same mapping as `bench run`",
+        help="Session key (e.g. ClawBench session_id)",
     )
     agent.add_argument("--timeout", type=float, default=2400.0, help="Max wall-clock seconds (default: 2400)")
     agent.add_argument(
@@ -1294,49 +1230,6 @@ def build_parser() -> argparse.ArgumentParser:
     get = sub.add_parser("get", help="Fetch full history by session name or session_id")
     get.add_argument("target", help="session name or session_id")
 
-    bench = sub.add_parser(
-        "bench",
-        help="ClawBench v2 integration (blocking until session history is stable; requires `fairyclaw start`)",
-    )
-    bench_sub = bench.add_subparsers(dest="bench_command", required=True)
-    bench_run = bench_sub.add_parser(
-        "run",
-        help="Send one user message and wait until sessions.history stops changing (for ClawBench adapters)",
-    )
-    bench_run.add_argument("text", nargs="+", help="User message body")
-    bench_run.add_argument(
-        "--session",
-        required=True,
-        help="Session name (mapped in cli_session_map.json; use a stable id from the harness)",
-    )
-    bench_run.add_argument(
-        "--timeout",
-        type=float,
-        default=2400.0,
-        help="Max wall-clock seconds (default: 2400)",
-    )
-    bench_run.add_argument(
-        "--idle-seconds",
-        type=float,
-        default=3.0,
-        dest="idle_seconds",
-        help="Seconds of unchanged history before success (default: 3)",
-    )
-    bench_run.add_argument(
-        "--poll-interval",
-        type=float,
-        default=0.5,
-        dest="poll_interval",
-        help="Seconds between history polls (default: 0.5)",
-    )
-    bench_run.add_argument(
-        "--min-wait-after-send",
-        type=float,
-        default=2.0,
-        dest="min_wait_after_send",
-        help="Minimum seconds after send before idle can succeed (default: 2)",
-    )
-
     sess = sub.add_parser("session", help="Session mapping management for benchmark CLI")
     sess_sub = sess.add_subparsers(dest="session_command", required=True)
     sess_sub.add_parser("list", help="List local session name mappings")
@@ -1357,9 +1250,6 @@ def main() -> int:
             return _cmd_send(args)
         if args.command == "agent":
             return _cmd_agent(args)
-        if args.command == "bench":
-            if args.bench_command == "run":
-                return _cmd_bench_run(args)
         if args.command == "get":
             return _cmd_get(args)
         if args.command == "session":

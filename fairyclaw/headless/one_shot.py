@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fairyclaw.bench_clawbench import last_assistant_reply_from_history_events
+from fairyclaw.session_history_utils import last_assistant_reply_from_history_events
 from fairyclaw.bridge.gateway_control import BusinessGatewayControl
 from fairyclaw.core.domain import ContentSegment
 from fairyclaw.core.gateway_protocol.ingress import GatewayIngressService
