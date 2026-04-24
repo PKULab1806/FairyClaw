@@ -1,0 +1,182 @@
+{
+  "name": "ImageOps",
+  "description": "Image context injection and local image editing tools. Use this group for multimodal image understanding prep and image style/background transformations.",
+  "always_enable_planner": false,
+  "always_enable_subagent": false,
+  "manifest_version": "1.1",
+  "routing_hint": "Enable for image analysis/editing requests, especially when tasks involve local image files, style transfer, or scene/background changes.",
+  "capabilities": [
+    {
+      "name": "inject_image_context",
+      "description": "Load an image from file_path/file_id/url and return an OpenAI-compatible image_url content segment. For local files and file_id, the URL is a data:mime;base64 payload so multimodal models can directly read pixels.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "input_ref": {
+              "type": "object",
+              "properties": {
+                "file_path": { "type": "string" },
+                "file_id": { "type": "string" },
+                "url": { "type": "string" }
+              },
+              "additionalProperties": false
+            },
+            "mime_hint": {
+              "type": "string",
+              "description": "Optional MIME hint for local bytes when type probing is ambiguous."
+            },
+            "max_bytes": {
+              "type": "integer",
+              "description": "Maximum image bytes allowed before truncation/error handling."
+            },
+            "append_text_hint": {
+              "type": "string",
+              "description": "Optional text segment to pair with the image context."
+            },
+            "scope": {
+              "type": "string",
+              "enum": ["current_turn", "session_memory"],
+              "default": "current_turn",
+              "description": "current_turn returns segment only; session_memory also persists the image segment into session history."
+            }
+          },
+          "required": ["input_ref"]
+        }
+      },
+      "script": "inject_image_context.py",
+      "record_event": true
+    },
+    {
+      "name": "apply_image_style",
+      "description": "Apply a configurable local style profile to an input image and write the styled output image.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "input_ref": {
+              "type": "object",
+              "properties": {
+                "file_path": { "type": "string" },
+                "file_id": { "type": "string" }
+              },
+              "additionalProperties": false
+            },
+            "output_path": {
+              "type": "string",
+              "description": "Output image path (absolute or workspace-relative)."
+            },
+            "style_profile": {
+              "type": "string",
+              "description": "Style profile id, e.g. toon_v1, watercolor_v1, oilpaint_v1, pixelart_v1, sketch_v1."
+            },
+            "intensity": {
+              "type": "number",
+              "minimum": 0.0,
+              "maximum": 1.0,
+              "default": 0.7
+            },
+            "preserve_edges": {
+              "type": "boolean",
+              "default": true
+            },
+            "seed": {
+              "type": "integer",
+              "description": "Optional deterministic seed for noise-based style details."
+            }
+          },
+          "required": ["input_ref", "output_path", "style_profile"]
+        }
+      },
+      "script": "apply_image_style.py",
+      "record_event": true
+    },
+    {
+      "name": "compose_subject_background",
+      "description": "Compose a segmented subject from input image onto a generated/preset/new background while preserving subject identity.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "input_ref": {
+              "type": "object",
+              "properties": {
+                "file_path": { "type": "string" },
+                "file_id": { "type": "string" }
+              },
+              "additionalProperties": false
+            },
+            "output_path": {
+              "type": "string"
+            },
+            "background_spec": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": ["preset", "gradient", "procedural", "image"]
+                },
+                "id_or_params": {
+                  "type": "object",
+                  "description": "Preset id or background parameters."
+                }
+              },
+              "required": ["type"],
+              "additionalProperties": false
+            },
+            "subject_policy": {
+              "type": "object",
+              "properties": {
+                "preserve_subject": { "type": "boolean", "default": true },
+                "segmentation_mode": {
+                  "type": "string",
+                  "enum": ["auto", "grabcut", "saliency"],
+                  "default": "auto"
+                }
+              },
+              "additionalProperties": false
+            },
+            "placement": {
+              "type": "object",
+              "properties": {
+                "anchor": {
+                  "type": "string",
+                  "enum": ["center", "left", "right"],
+                  "default": "center"
+                },
+                "scale": {
+                  "type": "number",
+                  "minimum": 0.2,
+                  "maximum": 1.8,
+                  "default": 1.0
+                },
+                "margin_ratio": {
+                  "type": "number",
+                  "minimum": 0.0,
+                  "maximum": 0.4,
+                  "default": 0.05
+                }
+              },
+              "additionalProperties": false
+            },
+            "blend_policy": {
+              "type": "object",
+              "properties": {
+                "feather_radius": { "type": "integer", "minimum": 0, "maximum": 30, "default": 8 },
+                "shadow_strength": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.3 },
+                "color_match_strength": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.4 }
+              },
+              "additionalProperties": false
+            }
+          },
+          "required": ["input_ref", "output_path", "background_spec"]
+        }
+      },
+      "script": "compose_subject_background.py",
+      "record_event": true
+    }
+  ]
+}
