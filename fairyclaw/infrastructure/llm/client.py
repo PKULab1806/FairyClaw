@@ -13,6 +13,8 @@ import importlib
 import json
 import logging
 import os
+import re
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -301,6 +303,50 @@ class OpenAICompatibleLLMClient:
             return None
         return getattr(reins_mod, "trace", None)
 
+    @staticmethod
+    def _parse_dsml_tool_calls(reasoning: str) -> list[ToolCall]:
+        """Parse DeepSeek DSML-format tool calls from reasoning_content.
+
+        DeepSeek-v3 series models occasionally emit tool calls inside
+        ``reasoning_content`` using DSML XML tags instead of the standard
+        ``tool_calls`` JSON field.  When this happens the standard field is
+        empty and nothing gets executed.  This method extracts those calls so
+        they are treated identically to regular tool calls.
+
+        DSML example::
+
+            <｜DSML｜function_calls>
+            <｜DSML｜invoke name="run_command">
+            <｜DSML｜parameter name="command" string="true">echo hi</｜DSML｜parameter>
+            </｜DSML｜invoke>
+            </｜DSML｜function_calls>
+        """
+        if not reasoning or "<｜DSML｜" not in reasoning:
+            return []
+        calls: list[ToolCall] = []
+        invoke_pattern = re.compile(
+            r"<｜DSML｜invoke\s+name=['\"]([^'\"]+)['\"]>(.*?)</｜DSML｜invoke>",
+            re.DOTALL,
+        )
+        param_pattern = re.compile(
+            r"<｜DSML｜parameter\s+name=['\"]([^'\"]+)['\"][^>]*>(.*?)</｜DSML｜parameter>",
+            re.DOTALL,
+        )
+        for invoke_match in invoke_pattern.finditer(reasoning):
+            tool_name = invoke_match.group(1).strip()
+            invoke_body = invoke_match.group(2)
+            arguments: dict[str, str] = {}
+            for param_match in param_pattern.finditer(invoke_body):
+                arguments[param_match.group(1).strip()] = param_match.group(2).strip()
+            calls.append(
+                ToolCall(
+                    id=f"dsml_{uuid.uuid4().hex[:8]}",
+                    name=tool_name,
+                    arguments=json.dumps(arguments, ensure_ascii=False),
+                )
+            )
+        return calls
+
     def _parse_chat_result(self, data: dict[str, Any]) -> ChatResult:
         """Parse raw API payload into ChatResult structure.
 
@@ -325,6 +371,17 @@ class OpenAICompatibleLLMClient:
                     arguments=str(function.get("arguments", "{}")),
                 )
             )
+        # Fall back to DSML tool calls embedded in reasoning_content when the
+        # standard tool_calls field is empty (DeepSeek-v3 series behaviour).
+        if not calls:
+            reasoning = message.get("reasoning_content") or ""
+            dsml_calls = self._parse_dsml_tool_calls(reasoning)
+            if dsml_calls:
+                logger.debug(
+                    "Extracted %d tool call(s) from reasoning_content DSML (standard tool_calls was empty)",
+                    len(dsml_calls),
+                )
+                calls = dsml_calls
         usage = data.get("usage", {}) if isinstance(data, dict) else {}
         prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
         completion_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None

@@ -38,7 +38,7 @@ def _segments_preview(content: Any) -> str:
             continue
         st = str(item.get("type") or "")
         if st == "text":
-            parts.append(str(item.get("text") or ""))
+            parts.append(str(item.get("text") or item.get("content") or ""))
         elif st == "file":
             fid = item.get("file_id")
             parts.append(f"[file:{fid}]" if fid else "[file]")
@@ -48,6 +48,15 @@ def _segments_preview(content: Any) -> str:
             parts.append(f"[image:{url}]" if url else "[image]")
         elif st == "code_block":
             parts.append(str(item.get("text") or item.get("content") or ""))
+        else:
+            # Future / foreign segment shapes: pull any inline string.
+            v = item.get("text")
+            if isinstance(v, str) and v.strip():
+                parts.append(v)
+                continue
+            v = item.get("content")
+            if isinstance(v, str) and v.strip():
+                parts.append(v)
     return "\n".join(parts).strip()
 
 

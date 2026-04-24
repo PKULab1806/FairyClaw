@@ -5,7 +5,6 @@
 Initialize web API, database, event bus, session scheduler, and watchdog.
 """
 
-import asyncio
 import logging
 import os
 
@@ -14,19 +13,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from fairyclaw.bridge.gateway_control import BusinessGatewayControl
-from fairyclaw.bridge.user_gateway import UserGateway, create_ws_bridge_router
+from fairyclaw.bridge.user_gateway import create_ws_bridge_router
 from fairyclaw.config.settings import settings
-from fairyclaw.core.agent.planning.planner import Planner
-from fairyclaw.core.gateway_protocol.control_envelope import HeartbeatInfo, TelemetrySnapshot
-from fairyclaw.core.gateway_protocol.models import now_ms
-from fairyclaw.core.events.bus import SessionEventBus
-from fairyclaw.core.events.plugin_dispatcher import EventPluginDispatcher
-from fairyclaw.core.events.runtime import get_user_gateway, set_file_delivery, set_runtime_bus, set_user_gateway
-from fairyclaw.core.events.session_scheduler import RuntimeSessionScheduler
-from fairyclaw.infrastructure.database.models import Base
-from fairyclaw.infrastructure.database.session import engine
-from fairyclaw.infrastructure.logging_setup import setup_logging
+from fairyclaw.runtime.lifecycle import BusinessRuntime, shutdown_business_runtime, startup_business_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -51,53 +40,22 @@ async def startup() -> None:
     Raises:
         Startup exceptions propagate to ASGI server and fail application boot.
     """
-    setup_logging()
-    settings.ensure_dirs()
     if settings.filesystem_root_dir:
         try:
             os.chdir(settings.filesystem_root_dir)
             print(f"Working directory changed to: {settings.filesystem_root_dir}")
         except FileNotFoundError:
             print(f"Warning: filesystem_root_dir '{settings.filesystem_root_dir}' not found. Using default CWD.")
-        except Exception as e:
+        except OSError as e:
             print(f"Error changing working directory: {e}")
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    planner = Planner()
-    event_dispatcher = EventPluginDispatcher(planner.registry)
-    bus = SessionEventBus(worker_count=settings.event_bus_worker_count)
-    gw_control = BusinessGatewayControl(planner)
-    user_gateway = UserGateway(bus=bus, gateway_control=gw_control)
-    set_user_gateway(user_gateway)
-
-    async def telemetry_loop() -> None:
-        while True:
-            await asyncio.sleep(30)
-            uwg = get_user_gateway()
-            if uwg is None:
-                continue
-            snap = TelemetrySnapshot(
-                heartbeat=HeartbeatInfo(status="HEARTBEAT_OK", server_time_ms=now_ms(), message=None),
-                reins_enabled=settings.reins_enabled,
-            )
-            await uwg.emit_telemetry_snapshot(snap)
-
-    asyncio.create_task(telemetry_loop())
-    set_file_delivery(user_gateway.emit_file)
-    scheduler = RuntimeSessionScheduler(
-        bus=bus,
-        planner=planner,
-        event_dispatcher=event_dispatcher,
-    )
-    await scheduler.start()
-    set_runtime_bus(bus)
-    app.state.runtime_bus = bus
-    app.state.runtime_planner = planner
-    app.state.runtime_scheduler = scheduler
-    app.state.user_gateway = user_gateway
-    app.include_router(create_ws_bridge_router(user_gateway), tags=["bridge"])
+    rt = await startup_business_runtime()
+    app.state.business_runtime = rt
+    app.state.runtime_bus = rt.bus
+    app.state.runtime_planner = rt.planner
+    app.state.runtime_scheduler = rt.scheduler
+    app.state.user_gateway = rt.user_gateway
+    app.include_router(create_ws_bridge_router(rt.user_gateway), tags=["bridge"])
 
 
 @app.on_event("shutdown")
@@ -108,14 +66,9 @@ async def shutdown() -> None:
         None
     """
     logger.info("FairyClaw Business ASGI shutdown starting")
-    scheduler = getattr(app.state, "runtime_scheduler", None)
-    if isinstance(scheduler, RuntimeSessionScheduler):
-        await scheduler.stop()
-    bus = getattr(app.state, "runtime_bus", None)
-    if bus:
-        await bus.stop()
-    set_file_delivery(None)
-    set_user_gateway(None)
+    rt: BusinessRuntime | None = getattr(app.state, "business_runtime", None)
+    if rt is not None:
+        await shutdown_business_runtime(rt)
     logger.info("FairyClaw shutdown complete")
 
 

@@ -25,11 +25,11 @@ _file_delivery: Callable[[str, str], Awaitable[None]] | None = None
 _user_gateway: UserGateway | None = None
 
 
-def set_runtime_bus(bus: SessionEventBus) -> None:
-    """Register global runtime event bus singleton.
+def set_runtime_bus(bus: SessionEventBus | None) -> None:
+    """Register or clear the global runtime event bus singleton.
 
     Args:
-        bus (SessionEventBus): Runtime event bus instance.
+        bus: Active bus, or None at shutdown.
 
     Returns:
         None

@@ -54,6 +54,35 @@ Set **`FAIRYCLAW_API_TOKEN`** before startup if you do not want the default dev 
 
 More deployment options: [DEPLOY.md](DEPLOY.md). To embed a fresh frontend in the wheel: `python scripts/prepare_web_dist.py` then `python -m build`.
 
+### CLI: `fairyclaw agent` (in-process, no `start`)
+
+For **scripts, benchmarks, or headless use**, you can run the full Business runtime (planner, DB, tools) in **one OS process** without `fairyclaw start` or a browser:
+
+```bash
+# Set the API key(s) named by your profile’s api_key_env in config/llm_endpoints.yaml.
+export OPENAI_API_KEY="…"   # example; use the env var your provider expects
+
+# Required: --session (stable name; reuses the same id via <data>/cli_session_map.json)
+# Message: --message "…"  OR  positional text after the flags
+fairyclaw agent --session my-bench-run-1 --message "List files in the workspace and summarize."
+```
+
+**Typical environment** when you need a fixed working directory (e.g. a task `workspace/` from a harness):
+
+| Variable | Role |
+|----------|------|
+| `FAIRYCLAW_CONFIG_DIR` | Config dir containing `llm_endpoints.yaml`, `fairyclaw.env` (defaults if unset follow the table above) |
+| `FAIRYCLAW_DATA_DIR` | SQLite, logs, `cli_session_map.json` (session name → id) |
+| `FAIRYCLAW_FILESYSTEM_ROOT_DIR` | Root allowed for file/exec tools; set to your **workspace** path for headless runs |
+
+**Useful flags** (see `fairyclaw agent --help` for all):
+
+- `--json-only` — single JSON line on stdout (good for machine parsing; reply is inside the JSON).
+- `--no-wait` — submit the user message and exit without waiting for the scheduler to finish.
+- Otherwise the CLI waits until the in-process **scheduler** has no active work (sub-agents included), with `--timeout` (default 2400s) as the wall limit.
+
+`fairyclaw help` and `fairyclaw --help` list other subcommands (`send` / `get` require a running `fairyclaw start` and talk to the gateway over the bridge).
+
 ---
 
 ## Key features

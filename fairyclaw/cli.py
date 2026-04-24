@@ -682,6 +682,19 @@ def _read_token(config_values: dict[str, str]) -> str:
     return os.getenv("FAIRYCLAW_API_TOKEN") or config_values.get("FAIRYCLAW_API_TOKEN", "sk-fairyclaw-dev-token")
 
 
+def _pin_cli_project_env(project_root: Path, config_dir: Path, config_values: dict[str, str]) -> None:
+    """Apply project config data paths to the process env before loading DB (``fairyclaw agent``)."""
+    data_resolved = _resolve_data_dir(project_root, config_values).resolve()
+    os.environ["FAIRYCLAW_DATA_DIR"] = str(data_resolved)
+    os.environ["FAIRYCLAW_LLM_ENDPOINTS_CONFIG_PATH"] = str((config_dir / "llm_endpoints.yaml").resolve())
+    if "FAIRYCLAW_DATABASE_URL" not in os.environ:
+        os.environ["FAIRYCLAW_DATABASE_URL"] = f"sqlite+aiosqlite:///{data_resolved / 'fairyclaw.db'}"
+    if "FAIRYCLAW_LOG_FILE_PATH" not in os.environ:
+        os.environ["FAIRYCLAW_LOG_FILE_PATH"] = str(data_resolved / "logs" / "fairyclaw.log")
+    cap_dest = capabilities_dir_from_env_values(project_root.resolve(), config_values)
+    os.environ["FAIRYCLAW_CAPABILITIES_DIR"] = str(cap_dest)
+
+
 def _resolve_data_dir(project_root: Path, config_values: dict[str, str]) -> Path:
     raw = (
         os.getenv("FAIRYCLAW_DATA_DIR")
@@ -804,12 +817,13 @@ def _cmd_help(_args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
     print("FairyClaw benchmark CLI commands:")
     print("  fairyclaw help")
     print("  fairyclaw send <text> [--session <name>] [--workspace <path>]")
+    print("  fairyclaw agent --session <name> --message '...'   # one process, no `start` (Moltis-style)")
     print("  fairyclaw get <session_name_or_id>")
     print("  fairyclaw session list")
     print("  fairyclaw session rm <session_name_or_id>")
     print("")
     print("Notes:")
-    print("  - Run `fairyclaw start` first.")
+    print("  - Run `fairyclaw start` first for `send` and `get`; use `fairyclaw agent` to run without a daemon.")
     print("  - Same --session name reuses the session; omit --session to create an anonymous session.")
     print("  - --workspace only applies when creating a new session; it is ignored for reused sessions.")
     print("  - Session-name mappings are stored in <FAIRYCLAW_DATA_DIR>/cli_session_map.json.")
@@ -824,6 +838,17 @@ def _cmd_send(args: argparse.Namespace) -> int:
     map_path = _cli_session_map_path(data_dir)
     mapping = _load_cli_session_map(map_path)
 
+    workspace_raw = (getattr(args, "workspace", None) or "").strip()
+    workspace_path: str | None = None
+    if workspace_raw:
+        workspace_path = str(Path(workspace_raw).expanduser().resolve())
+
+    def _send_meta() -> dict[str, Any]:
+        meta: dict[str, Any] = {"source": "cli_benchmark"}
+        if workspace_path:
+            meta["workspace_root"] = workspace_path
+        return meta
+
     target_sid: str
     session_name = (args.session or "").strip()
     if session_name:
@@ -831,14 +856,14 @@ def _cmd_send(args: argparse.Namespace) -> int:
         if existing:
             target_sid = existing
         else:
-            meta: dict[str, Any] = {"source": "cli_benchmark"}
-            workspace_raw = str(getattr(args, "workspace", "") or "").strip()
-            if workspace_raw:
-                meta["workspace_root"] = workspace_raw
             created = _ws_request(
                 config_values,
                 "session.create",
-                {"platform": "web", "title": session_name, "meta": meta},
+                {
+                    "platform": "web",
+                    "title": session_name,
+                    "meta": _send_meta(),
+                },
             )
             target_sid = str(created.get("session_id") or "").strip()
             if not target_sid:
@@ -846,14 +871,14 @@ def _cmd_send(args: argparse.Namespace) -> int:
             mapping[session_name] = target_sid
             _save_cli_session_map(map_path, mapping)
     else:
-        meta: dict[str, Any] = {"source": "cli_benchmark"}
-        workspace_raw = str(getattr(args, "workspace", "") or "").strip()
-        if workspace_raw:
-            meta["workspace_root"] = workspace_raw
         created = _ws_request(
             config_values,
             "session.create",
-            {"platform": "web", "title": None, "meta": meta},
+            {
+                "platform": "web",
+                "title": None,
+                "meta": _send_meta(),
+            },
         )
         target_sid = str(created.get("session_id") or "").strip()
         if not target_sid:
@@ -869,6 +894,46 @@ def _cmd_send(args: argparse.Namespace) -> int:
     )
     print(json.dumps({"session_id": target_sid, "status": ack.get("status"), "message": ack.get("message")}, ensure_ascii=False))
     return 0
+
+
+def _cmd_agent(args: argparse.Namespace) -> int:
+    """Moltis-style: one OS process, full Business runtime, no ``fairyclaw start``."""
+    project_root, config_dir, config_values = _prepare_project_config(no_sync_config=True)
+    _pin_cli_project_env(project_root, config_dir, config_values)
+    if bool(getattr(args, "json_only", False)):
+        from fairyclaw.config.settings import settings as _fc_settings
+
+        # Machine-readable one-liner: avoid INFO lines on stderr/stdout from the runtime.
+        if (_fc_settings.log_level or "INFO").upper() in {"DEBUG", "INFO"}:
+            _fc_settings.log_level = "WARNING"
+    from fairyclaw.headless.one_shot import run_in_process_agent
+
+    map_path = _cli_session_map_path(_resolve_data_dir(project_root, config_values))
+    msg = (args.message or "").strip() or " ".join(args.text or []).strip()
+    if not msg:
+        raise RuntimeError("message is required: use --message or positional text")
+    session_name = (args.session or "").strip()
+    if not session_name:
+        raise RuntimeError("--session is required")
+
+    result = asyncio.run(
+        run_in_process_agent(
+            map_path=map_path,
+            session_name=session_name,
+            text=msg,
+            wait_idle=not bool(args.no_wait),
+            timeout_sec=float(args.timeout),
+            poll_sec=float(args.poll_interval),
+            min_wait_sec=float(args.min_wait_after_send),
+        )
+    )
+    out: dict[str, Any] = {"cli": "agent", **result}
+    if not bool(getattr(args, "json_only", False)):
+        reply = result.get("reply")
+        if isinstance(reply, str) and reply.strip():
+            print("Assistant:\n" + reply.strip() + "\n", flush=True)
+    print(json.dumps(out, ensure_ascii=False), flush=True)
+    return 0 if result.get("ok") else 1
 
 
 def _cmd_get(args: argparse.Namespace) -> int:
@@ -1054,7 +1119,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("help", help="Show benchmark CLI commands")
 
-    start = sub.add_parser("start", help="Build frontend and run business+gateway")
+    start = sub.add_parser("start", help="Build frontend and run Business + Gateway")
     start.add_argument("--skip-build", action="store_true", help="Skip npm build")
     start.add_argument("--force-build", action="store_true", help="Force npm build when web/ is present")
     start.add_argument("--no-proxy", action="store_true", help="Disable proxy env for child processes")
@@ -1114,7 +1179,53 @@ def build_parser() -> argparse.ArgumentParser:
     send = sub.add_parser("send", help="Send one text message for benchmark")
     send.add_argument("text", nargs="+", help="Text content")
     send.add_argument("--session", default=None, help="Named session to reuse/create")
-    send.add_argument("--workspace", default=None, help="Session workspace path (only used when creating a new session)")
+    send.add_argument(
+        "--workspace",
+        default=None,
+        help="Only when creating a new session: workspace root path (ignored if --session reuses an existing name)",
+    )
+
+    agent = sub.add_parser("agent", help="One-shot in-process run: no `start` (Moltis-style; loads planner+DB in this process)")
+    agent.add_argument("--message", default=None, help="User message text")
+    agent.add_argument("text", nargs="*", help="Message if --message is omitted (joined with spaces)")
+    agent.add_argument(
+        "--session",
+        required=True,
+        help="Session key (e.g. ClawBench session_id)",
+    )
+    agent.add_argument("--timeout", type=float, default=2400.0, help="Max wall-clock seconds (default: 2400)")
+    agent.add_argument(
+        "--idle-seconds",
+        type=float,
+        default=3.0,
+        dest="idle_seconds",
+        help="Unchanged history seconds for success (default: 3)",
+    )
+    agent.add_argument(
+        "--poll-interval",
+        type=float,
+        default=0.5,
+        dest="poll_interval",
+        help="History poll interval (default: 0.5)",
+    )
+    agent.add_argument(
+        "--min-wait-after-send",
+        type=float,
+        default=2.0,
+        dest="min_wait_after_send",
+        help="Min seconds after send before idle can count (default: 2)",
+    )
+    agent.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="Only enqueue; do not wait for idle history (no ClawBench completion signal)",
+    )
+    agent.add_argument(
+        "--json-only",
+        action="store_true",
+        dest="json_only",
+        help="Do not print the Assistant: block; only print one JSON line (reply is still in the JSON)",
+    )
 
     get = sub.add_parser("get", help="Fetch full history by session name or session_id")
     get.add_argument("target", help="session name or session_id")
@@ -1137,6 +1248,8 @@ def main() -> int:
             return _start(args)
         if args.command == "send":
             return _cmd_send(args)
+        if args.command == "agent":
+            return _cmd_agent(args)
         if args.command == "get":
             return _cmd_get(args)
         if args.command == "session":
