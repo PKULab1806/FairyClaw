@@ -12,6 +12,7 @@ from fairyclaw.infrastructure.database.session import AsyncSessionLocal
 from fairyclaw.infrastructure.llm.factory import create_llm_client
 from fairyclaw_plugins.session_memory.config import SessionMemoryRuntimeConfig
 
+from ._extraction_checkpoint_state import LEGACY_MEMORY_CHECKPOINT_PREFIX
 from ._gap_repair_state import load_gap_repair_state, save_gap_repair_state
 from ._memory_files import read_memory_text
 
@@ -222,7 +223,7 @@ def _sanitize_memory_for_prompt(text: str) -> str:
     dropping_gap = False
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith("<!-- session_memory_checkpoint -->"):
+        if stripped.startswith(LEGACY_MEMORY_CHECKPOINT_PREFIX):
             continue
         if stripped.startswith("## GapRepair"):
             dropping_gap = True

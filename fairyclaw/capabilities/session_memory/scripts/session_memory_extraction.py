@@ -9,11 +9,17 @@ from fairyclaw.infrastructure.llm.factory import create_llm_client
 from fairyclaw.infrastructure.tokenizer.counter import TokenCounter
 from fairyclaw_plugins.session_memory.config import SessionMemoryRuntimeConfig
 
+from ._extraction_checkpoint_state import (
+    extraction_checkpoint_path,
+    load_extraction_checkpoint,
+    migrate_legacy_checkpoint_from_memory_md,
+    save_extraction_checkpoint,
+    strip_legacy_checkpoint_lines,
+)
 from ._memory_files import append_memory_text, read_memory_text, write_memory_text
 
 logger = logging.getLogger(__name__)
 _STATE_NAME = "MEMORY.md"
-_CHECKPOINT_MARKER = "<!-- session_memory_checkpoint -->"
 
 
 async def execute_hook(
@@ -66,37 +72,22 @@ def _build_transcript(payload: AfterLlmResponseHookPayload) -> str:
 
 
 def _load_checkpoint_state(cfg: SessionMemoryRuntimeConfig) -> dict[str, int]:
-    content = read_memory_text(name=_STATE_NAME, memory_root=cfg.memory_root)
-    line = ""
-    for row in reversed(content.splitlines()):
-        if row.strip().startswith(_CHECKPOINT_MARKER):
-            line = row.strip()
-            break
-    if not line:
-        return {"since_messages": 0, "since_tokens": 0, "since_tool_rounds": 0, "cooldown": 0}
-    raw = line.replace(_CHECKPOINT_MARKER, "", 1).strip()
-    try:
-        data = json.loads(raw) if raw else {}
-    except Exception:
-        data = {}
-    return {
-        "since_messages": int(data.get("since_messages", 0)),
-        "since_tokens": int(data.get("since_tokens", 0)),
-        "since_tool_rounds": int(data.get("since_tool_rounds", 0)),
-        "cooldown": int(data.get("cooldown", 0)),
-    }
+    if extraction_checkpoint_path(memory_root=cfg.memory_root).exists():
+        return load_extraction_checkpoint(memory_root=cfg.memory_root)
+    memory_text = read_memory_text(name=_STATE_NAME, memory_root=cfg.memory_root)
+    migrated = migrate_legacy_checkpoint_from_memory_md(memory_root=cfg.memory_root, memory_text=memory_text)
+    if migrated is None:
+        return load_extraction_checkpoint(memory_root=cfg.memory_root)
+    cleaned = strip_legacy_checkpoint_lines(memory_text)
+    new_body = f"{cleaned}\n" if cleaned else ""
+    if new_body != memory_text:
+        write_memory_text(name=_STATE_NAME, content=new_body, memory_root=cfg.memory_root)
+    save_extraction_checkpoint(memory_root=cfg.memory_root, state=migrated)
+    return migrated
 
 
 def _save_checkpoint_state(*, state: dict[str, int], cfg: SessionMemoryRuntimeConfig) -> None:
-    marker = f"{_CHECKPOINT_MARKER} {json.dumps(state, ensure_ascii=False)}"
-    content = read_memory_text(name=_STATE_NAME, memory_root=cfg.memory_root)
-    lines = [line for line in content.splitlines() if not line.strip().startswith(_CHECKPOINT_MARKER)]
-    rebuilt = "\n".join(lines).rstrip()
-    if rebuilt:
-        rebuilt = f"{rebuilt}\n{marker}\n"
-    else:
-        rebuilt = f"{marker}\n"
-    write_memory_text(name=_STATE_NAME, content=rebuilt, memory_root=cfg.memory_root)
+    save_extraction_checkpoint(memory_root=cfg.memory_root, state=state)
 
 
 def _should_trigger_llm(*, state: dict[str, int], cfg: SessionMemoryRuntimeConfig) -> bool:
@@ -112,7 +103,8 @@ def _should_trigger_llm(*, state: dict[str, int], cfg: SessionMemoryRuntimeConfi
 async def _run_agentic_search_and_memory_retrieval(*, transcript: str, cfg: SessionMemoryRuntimeConfig) -> dict[str, object]:
     user_text = read_memory_text(name="USER.md", memory_root=cfg.memory_root)
     soul_text = read_memory_text(name="SOUL.md", memory_root=cfg.memory_root)
-    memory_text = read_memory_text(name="MEMORY.md", memory_root=cfg.memory_root)[-2000:]
+    memory_full = read_memory_text(name="MEMORY.md", memory_root=cfg.memory_root)
+    memory_text = strip_legacy_checkpoint_lines(memory_full)[-2000:]
     prompt = (
         "Run Agentic Search and Memory Retrieval over this incremental transcript.\n"
         "Produce a JSON update plan for USER.md, SOUL.md, MEMORY.md.\n"
