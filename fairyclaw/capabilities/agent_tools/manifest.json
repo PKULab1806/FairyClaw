@@ -29,7 +29,7 @@
             "attachments": {
               "type": "array",
               "items": { "type": "string" },
-              "description": "REQUIRED when you need the sub-agent to see files: each string must be (1) a session file_id from send_file — copy the FULL id exactly (normally `file_` plus 32 hex characters; do not truncate or paraphrase), OR (2) an absolute filesystem path readable by the server, OR (3) an http(s) URL. FORBIDDEN: do not list `image`, `general`, `code`, or any `task_type` value here — those belong only in `task_type`. Omit this array or leave empty if no files to pass."
+              "description": "When the sub-agent must read a local file: use a plain absolute path starting with `/` (e.g. `/home/user/project/cat.jpg`) that exists on the server. `file:///...` is accepted and normalized to `/...` server-side (plain `/...` is preferred in prompts). For uploads use the exact `file_` + hex id from send_file/list_session_files. For remote images use `http://` or `https://` URLs. Never put task_type words (`image`, `code`, `general`) here. Omit or leave empty if nothing to attach."
             },
             "done_when": {
               "type": "array",

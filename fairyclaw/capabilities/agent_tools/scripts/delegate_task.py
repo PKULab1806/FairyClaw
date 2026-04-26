@@ -20,6 +20,8 @@ from fairyclaw.core.agent.session.memory import PersistentMemory
 from fairyclaw.infrastructure.database.models import FileModel, GatewaySessionRouteModel, SessionModel
 from fairyclaw.infrastructure.database.repository import EventRepository, FileRepository
 from fairyclaw.infrastructure.database.session import AsyncSessionLocal
+from fairyclaw.infrastructure.media.image_compress import compress_image_bytes
+from fairyclaw.infrastructure.uri_paths import normalize_file_uri_to_path
 
 from .dc_contract import validate_done_when
 
@@ -80,7 +82,8 @@ async def _validate_attachments_for_delegation(
     owning_session_id: str,
 ) -> str | None:
     """Return an error string if any attachment is unusable; otherwise None."""
-    for att in attachments:
+    for att_raw in attachments:
+        att = normalize_file_uri_to_path(str(att_raw).strip())
         if att.startswith(("http://", "https://")):
             continue
         if os.path.exists(att):
@@ -128,7 +131,7 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
     raw_attachments = args.get("attachments", [])
     if not isinstance(raw_attachments, list):
         raw_attachments = []
-    attachments = [str(a).strip() for a in raw_attachments if str(a).strip()]
+    attachments = [normalize_file_uri_to_path(str(a).strip()) for a in raw_attachments if str(a).strip()]
     if not instruction:
         return "Error: instruction is required."
     done_when_check = validate_done_when(done_when_raw)
@@ -222,8 +225,12 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
                         if mime_type and mime_type.startswith("image"):
                             try:
                                 with open(att, "rb") as binary_file:
-                                    b64_data = base64.b64encode(binary_file.read()).decode("utf-8")
-                                user_segments.append(ContentSegment.image_url_segment(f"data:{mime_type};base64,{b64_data}"))
+                                    raw_image = binary_file.read()
+                                optimized_bytes, optimized_mime = compress_image_bytes(raw_image, mime_type)
+                                b64_data = base64.b64encode(optimized_bytes).decode("utf-8")
+                                user_segments.append(
+                                    ContentSegment.image_url_segment(f"data:{optimized_mime};base64,{b64_data}")
+                                )
                             except Exception as e:
                                 user_segments.append(ContentSegment.text_segment(f"\n\n[Failed to attach image {att}: {e}]"))
                         else:
@@ -261,8 +268,11 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
                                 pass
 
                         if mime_type.startswith("image"):
-                            b64_data = base64.b64encode(new_file.content).decode("utf-8")
-                            user_segments.append(ContentSegment.image_url_segment(f"data:{mime_type};base64,{b64_data}"))
+                            optimized_bytes, optimized_mime = compress_image_bytes(new_file.content, mime_type)
+                            b64_data = base64.b64encode(optimized_bytes).decode("utf-8")
+                            user_segments.append(
+                                ContentSegment.image_url_segment(f"data:{optimized_mime};base64,{b64_data}")
+                            )
                             user_segments.append(
                                 ContentSegment.text_segment(
                                     f"\n\n[Attached Image File: {new_file.filename} (ID: {new_file.id})]"
@@ -309,13 +319,16 @@ async def execute(args: Dict[str, Any], context: ToolContext) -> str:
         async with AsyncSessionLocal() as db:
             repo = EventRepository(db)
             sub_memory = PersistentMemory(repo)
-            initial_message = SessionMessageBlock.from_segments(SessionMessageRole.USER, tuple(user_segments))
-            if initial_message is None:
-                return "Error: Failed to build initial sub-session message."
-            await sub_memory.add_session_event(
-                session_id=sub_session_id,
-                message=initial_message,
-            )
+            # Persist each segment as an individual user message so image attachments
+            # are not merged into a giant mixed-array payload.
+            for segment in user_segments:
+                message = SessionMessageBlock.from_segments(SessionMessageRole.USER, (segment,))
+                if message is None:
+                    return "Error: Failed to build initial sub-session message."
+                await sub_memory.add_session_event(
+                    session_id=sub_session_id,
+                    message=message,
+                )
     except Exception as e:
         return f"Error: Failed to initialize sub-session history: {e}"
 
