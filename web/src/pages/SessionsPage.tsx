@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { useGateway } from '../contexts/GatewayContext'
 import { useLocale } from '../contexts/LocaleContext'
+import { parseHistorySegments } from '../utils/parseHistorySegments'
 
 import './SessionsPage.css'
 
@@ -39,6 +40,7 @@ export function SessionsPage() {
     loadServerSessions,
     restoreSession,
     sendWsOp,
+    downloadSessionFile,
   } = useGateway()
   const [previewSessionId, setPreviewSessionId] = useState('')
   const [previewEvents, setPreviewEvents] = useState<Array<Record<string, unknown>>>([])
@@ -193,7 +195,8 @@ export function SessionsPage() {
                   const ts = typeof event.ts_ms === 'number' ? new Date(event.ts_ms).toLocaleString() : ''
                   if (kind === 'session_event') {
                     const role = String(event.role || 'assistant')
-                    const text = String(event.text || '')
+                    const parsed = parseHistorySegments(event.segments)
+                    const text = parsed.text || String(event.text || '')
                     const timer = parseTimerTickPreview(text)
                     return (
                       <li key={`preview_${idx}`} className="sessions-preview-item">
@@ -201,9 +204,42 @@ export function SessionsPage() {
                           <span className="sessions-preview-item__role">{timer ? 'timer_tick' : role}</span>
                           {ts ? <time>{ts}</time> : null}
                         </div>
-                        <pre className="sessions-preview-item__body">
-                          {timer ? `${timer.head}${timer.payload ? `\n${timer.payload}` : ''}` : (text || ' ')}
-                        </pre>
+                        {timer ? (
+                          <pre className="sessions-preview-item__body">
+                            {`${timer.head}${timer.payload ? `\n${timer.payload}` : ''}`}
+                          </pre>
+                        ) : (
+                          <div className="sessions-preview-item__content">
+                            {text ? <pre className="sessions-preview-item__body">{text}</pre> : null}
+                            {parsed.images.length > 0 ? (
+                              <div className="sessions-preview-item__images">
+                                {parsed.images.map((url, imageIdx) => (
+                                  <img
+                                    key={`preview_${idx}_img_${imageIdx}`}
+                                    className="sessions-preview-item__image"
+                                    src={url}
+                                    alt={`history image ${imageIdx + 1}`}
+                                  />
+                                ))}
+                              </div>
+                            ) : null}
+                            {parsed.files.length > 0 ? (
+                              <ul className="sessions-preview-item__files">
+                                {parsed.files.map((file) => (
+                                  <li key={file.fileId}>
+                                    <button
+                                      type="button"
+                                      className="sessions-preview-item__link"
+                                      onClick={() => void downloadSessionFile(previewSessionId, file.fileId, file.filename)}
+                                    >
+                                      {file.filename}
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : null}
+                          </div>
+                        )}
                       </li>
                     )
                   }

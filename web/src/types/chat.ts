@@ -2,6 +2,11 @@ export type Segment =
   | { type: 'text'; content: string }
   | { type: 'file'; file_id: string; mime_type?: string }
 
+export type HistorySegment =
+  | { type: 'text'; text?: string; content?: string }
+  | { type: 'image_url'; image_url?: { url?: string } }
+  | { type: 'file'; file_id?: string }
+
 export type SessionEventMessage =
   | {
       session_id: string
@@ -55,7 +60,7 @@ export type PendingFileRef = {
 }
 
 export type LogEntry =
-  | { id: string; role: 'system'; text: string; sessionId: string; ts: number }
+  | { id: string; role: 'system'; text: string; images?: string[]; sessionId: string; ts: number }
   | {
       id: string
       role: 'system'
@@ -88,8 +93,8 @@ export type LogEntry =
       sessionId: string
       ts: number
     }
-  | { id: string; role: 'user'; text: string; files: PendingFileRef[]; sessionId: string; ts: number }
-  | { id: string; role: 'assistant'; text?: string; file?: PendingFileRef; sessionId: string; ts: number }
+  | { id: string; role: 'user'; text: string; files: PendingFileRef[]; images?: string[]; sessionId: string; ts: number }
+  | { id: string; role: 'assistant'; text?: string; file?: PendingFileRef; images?: string[]; sessionId: string; ts: number }
 
 export type WsConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error' | 'closed'
 

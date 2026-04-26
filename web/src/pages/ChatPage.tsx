@@ -109,6 +109,18 @@ export function ChatPage() {
                     )}
                   </header>
                   {'text' in message && message.text && <p className="msg-bubble__body">{message.text}</p>}
+                  {'images' in message && Array.isArray(message.images) && message.images.length > 0 && (
+                    <div className="msg-bubble__images">
+                      {message.images.map((url, index) => (
+                        <img
+                          key={`${message.id}_img_${index}`}
+                          className="msg-bubble__image"
+                          src={url}
+                          alt={`message image ${index + 1}`}
+                        />
+                      ))}
+                    </div>
+                  )}
                   {'kind' in message && message.kind === 'tool_call' && (
                     <div className="msg-bubble__tool">
                       <p className="msg-bubble__tool-head">

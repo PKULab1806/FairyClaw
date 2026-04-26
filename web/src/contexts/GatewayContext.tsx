@@ -29,6 +29,7 @@ import type {
   UploadResult,
   WsConnectionState,
 } from '../types/chat'
+import { parseHistorySegments } from '../utils/parseHistorySegments'
 
 type GatewayContextValue = {
   /** Resolved gateway HTTP origin (same as WebSocket host). Read-only. */
@@ -121,7 +122,8 @@ function mapHistoryToLogEntries(sessionId: string, events: unknown[]): LogEntry[
     const ts = typeof e.ts_ms === 'number' ? e.ts_ms : Date.now()
     if (kind === 'session_event') {
       const roleRaw = String(e.role || 'assistant')
-      const text = String(e.text || '')
+      const parsedSegments = parseHistorySegments(e.segments)
+      const text = parsedSegments.text || String(e.text || '')
       const r =
         roleRaw === 'user' || roleRaw === 'assistant' || roleRaw === 'system' ? roleRaw : 'assistant'
       if (isSystemNotificationText(text)) {
@@ -146,7 +148,8 @@ function mapHistoryToLogEntries(sessionId: string, events: unknown[]): LogEntry[
           id: makeId(`hist_${idx}`),
           role: 'user',
           text,
-          files: [],
+          files: parsedSegments.files,
+          images: parsedSegments.images,
           sessionId,
           ts,
         })
@@ -155,6 +158,7 @@ function mapHistoryToLogEntries(sessionId: string, events: unknown[]): LogEntry[
           id: makeId(`hist_${idx}`),
           role: 'assistant',
           text,
+          images: parsedSegments.images,
           sessionId,
           ts,
         })
@@ -163,6 +167,7 @@ function mapHistoryToLogEntries(sessionId: string, events: unknown[]): LogEntry[
           id: makeId(`hist_${idx}`),
           role: 'system',
           text,
+          images: parsedSegments.images,
           sessionId,
           ts,
         })

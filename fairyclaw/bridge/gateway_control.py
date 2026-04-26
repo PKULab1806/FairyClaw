@@ -45,7 +45,10 @@ def _segments_preview(content: Any) -> str:
         elif st == "image_url":
             img = item.get("image_url")
             url = img.get("url") if isinstance(img, dict) else None
-            parts.append(f"[image:{url}]" if url else "[image]")
+            if isinstance(url, str) and url.startswith("data:image/"):
+                parts.append("[image:data-url omitted]")
+            else:
+                parts.append(f"[image:{url}]" if url else "[image]")
         elif st == "code_block":
             parts.append(str(item.get("text") or item.get("content") or ""))
         else:
@@ -60,6 +63,31 @@ def _segments_preview(content: Any) -> str:
     return "\n".join(parts).strip()
 
 
+def _build_segments_for_frontend(content: Any) -> list[dict[str, Any]]:
+    """Build segment list for frontend rendering from persisted content."""
+    if not isinstance(content, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        st = str(item.get("type") or "")
+        if st == "text":
+            text = str(item.get("text") or item.get("content") or "")
+            if text:
+                result.append({"type": "text", "text": text})
+        elif st == "image_url":
+            img = item.get("image_url")
+            url = img.get("url") if isinstance(img, dict) else None
+            if isinstance(url, str) and url:
+                result.append({"type": "image_url", "image_url": {"url": url}})
+        elif st == "file":
+            fid = item.get("file_id")
+            if fid:
+                result.append({"type": "file", "file_id": fid})
+    return result
+
+
 def _history_row(ev: EventModel) -> dict[str, Any]:
     ts_ms = int(ev.timestamp.timestamp() * 1000)
     if ev.type == EventType.SESSION_EVENT.value:
@@ -69,6 +97,7 @@ def _history_row(ev: EventModel) -> dict[str, Any]:
             "kind": "session_event",
             "role": role,
             "text": _segments_preview(ev.content),
+            "segments": _build_segments_for_frontend(ev.content),
             "ts_ms": ts_ms,
         }
     if ev.type == EventType.OPERATION_EVENT.value:

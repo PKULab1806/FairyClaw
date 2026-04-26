@@ -166,6 +166,23 @@
   word-break: break-word;
 }
 
+.msg-bubble__images {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.msg-bubble__image {
+  display: block;
+  max-width: min(100%, 420px);
+  max-height: 320px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border-light);
+  object-fit: contain;
+  background: var(--color-bg-surface);
+}
+
 .msg-bubble__files {
   margin: 8px 0 0;
   padding-left: 18px;
