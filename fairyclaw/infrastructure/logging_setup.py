@@ -62,6 +62,8 @@ def setup_logging() -> None:
     root.addHandler(file_handler)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    # OpenAI SDK DEBUG logs full request JSON (duplicates huge prompts with chat traffic).
+    logging.getLogger("openai").setLevel(logging.WARNING)
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
     logging.getLogger("aiosqlite").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)

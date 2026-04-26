@@ -19,6 +19,24 @@ profiles:
     api_key_env: OPENAI_API_KEY
     timeout_seconds: 300
     temperature: 0.2
+  # --- image_generation (type: image_generation) — used by generate_or_edit_image -----------------
+  # request_format (see fairyclaw.infrastructure.llm.image_edit_transport):
+  #   images_edits_img_urls_json — with input: POST {api_base}/images/edits JSON body
+  #     { "model", "img_urls": ["data:image/...;base64,..." or "https://..."], "prompt" }.
+  #     Text-only: POST {api_base}/images/generations (OpenAI-style JSON).
+  #   openai_images_edits_json — JSON; path /images/edits or /images/generations (no input)
+  #   openai_images_edits_multipart — multipart with input; text-only uses /images/generations JSON
+  # Optional: api_path overrides the edit URL path segment (default images/edits for img_urls format).
+  # Optional: multipart_image_field (default "image"), only for openai_images_edits_multipart.
+  # Optional: response_image_field (dotted JSON path); omit for auto-detection.
+  image_generation:
+    type: image_generation
+    api_base: https://api.openai.com/v1
+    model: dall-e-3
+    api_key_env: OPENAI_API_KEY
+    timeout_seconds: 120
+    request_format: openai_images_edits_json
+    api_path: /images/edits
   code:
     api_base: https://api.openai.com/v1
     model: gpt-4o

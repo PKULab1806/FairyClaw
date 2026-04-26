@@ -30,6 +30,11 @@ class LLMEndpointProfile:
     api_key_env: str
     timeout_seconds: int = 30
     temperature: float = 0.2
+    profile_type: str = "chat"
+    api_path: str | None = None
+    response_image_field: str | None = None
+    request_format: str | None = None
+    multipart_image_field: str | None = None
 
 
 @dataclass
@@ -70,6 +75,23 @@ def load_llm_endpoint_config() -> LLMEndpointConfig:
             api_key_env=str(raw.get("api_key_env", "OPENAI_API_KEY")),
             timeout_seconds=int(raw.get("timeout_seconds", 30)),
             temperature=float(raw.get("temperature", 0.2)),
+            profile_type=str(raw.get("type", "chat")),
+            api_path=(str(raw["api_path"]) if "api_path" in raw and raw.get("api_path") is not None else None),
+            response_image_field=(
+                str(raw["response_image_field"])
+                if "response_image_field" in raw and raw.get("response_image_field") is not None
+                else None
+            ),
+            request_format=(
+                str(raw["request_format"])
+                if "request_format" in raw and raw.get("request_format") is not None
+                else None
+            ),
+            multipart_image_field=(
+                str(raw["multipart_image_field"])
+                if "multipart_image_field" in raw and raw.get("multipart_image_field") is not None
+                else None
+            ),
         )
     return LLMEndpointConfig(default_profile=default_profile, fallback_profile=fallback_profile, profiles=profiles)
 

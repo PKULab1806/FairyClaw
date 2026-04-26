@@ -9,6 +9,7 @@ This module wraps OpenAI-compatible chat endpoints and handles:
 """
 
 import asyncio
+import base64
 import importlib
 import json
 import logging
@@ -20,6 +21,7 @@ from typing import Any
 
 from fairyclaw.config.settings import settings
 from fairyclaw.infrastructure.llm.config import LLMEndpointProfile
+from fairyclaw.infrastructure.llm.image_edit_transport import resolve_image_edit_transport
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,60 @@ DEFAULT_BASE_DELAY_SECONDS = 2
 TOOL_CHOICE_AUTO = "auto"
 CONTENT_TYPE_JSON = "application/json"
 REINS_AGENT_NAME = "fairyclaw_runtime"
+
+# Some OpenAI-compatible image endpoints return HTTP 200 with the picture only as a URL
+# or data-URL embedded in ``choices[0].message.content`` (plain string), not structured fields.
+_MARKDOWN_IMAGE_LINK_RE = re.compile(r"!\[[^\]]*\]\((https?://[^)\s]+)\)", re.IGNORECASE)
+_HTTP_IMAGE_FILE_URL_RE = re.compile(
+    r"https?://[^\s\)\]\"'<>]+?\.(?:png|jpe?g|webp)(?:\?[^\s\)\]\"'<>]*)?",
+    re.IGNORECASE,
+)
+_DATA_IMAGE_IN_TEXT_RE = re.compile(r"data:image/[^;\s]+;base64,[A-Za-z0-9+/=]+", re.IGNORECASE)
+
+
+def _dedupe_preserve_order(urls: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for u in urls:
+        u = u.strip()
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        out.append(u)
+    return out
+
+
+def _http_image_urls_in_text(text: str) -> list[str]:
+    found: list[str] = []
+    for m in _MARKDOWN_IMAGE_LINK_RE.finditer(text or ""):
+        found.append(m.group(1).strip())
+    for m in _HTTP_IMAGE_FILE_URL_RE.finditer(text or ""):
+        found.append(m.group(0).strip().rstrip(").,;\"'"))
+    return _dedupe_preserve_order(found)
+
+
+def _data_image_urls_in_text(text: str) -> list[str]:
+    return [m.group(0) for m in _DATA_IMAGE_IN_TEXT_RE.finditer(text or "")]
+
+
+def _dig_json_path(obj: Any, path: str) -> Any:
+    """Traverse dict/list structure using dotted path (e.g. ``choices.0.message.content``)."""
+    current = obj
+    for part in path.split("."):
+        if isinstance(current, dict):
+            current = current.get(part)
+            continue
+        if isinstance(current, list):
+            try:
+                idx = int(part)
+            except ValueError:
+                return None
+            if idx < 0 or idx >= len(current):
+                return None
+            current = current[idx]
+            continue
+        return None
+    return current
 
 
 @dataclass
@@ -230,6 +286,141 @@ class OpenAICompatibleLLMClient:
                 raise
         return self._parse_chat_result(data)
 
+    async def generate_image_edit(
+        self,
+        *,
+        prompt: str,
+        input_image_bytes: bytes | None = None,
+        input_mime: str | None = None,
+        profile: LLMEndpointProfile | None = None,
+        size: str | None = None,
+    ) -> bytes:
+        """Call an image-generation/edit endpoint and return decoded image bytes."""
+        import httpx
+
+        target = profile or self.profile
+        api_key = os.getenv(target.api_key_env, "").strip()
+        if not api_key:
+            raise RuntimeError(f"Missing API key env: {target.api_key_env}")
+        if not prompt.strip():
+            raise RuntimeError("prompt is required for image generation/edit.")
+        if not isinstance(input_mime, str) or not input_mime.strip():
+            input_mime = "image/png"
+
+        transport = resolve_image_edit_transport(
+            target,
+            prompt=prompt,
+            input_image_bytes=input_image_bytes,
+            input_mime=input_mime,
+            size=size,
+        )
+
+        headers_json = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": CONTENT_TYPE_JSON,
+        }
+        headers_multipart = {
+            "Authorization": f"Bearer {api_key}",
+        }
+        response_json: dict[str, Any] = {}
+        for attempt in range(DEFAULT_MAX_RETRIES):
+            try:
+                async with httpx.AsyncClient(timeout=target.timeout_seconds) as client:
+                    if transport.post_mode == "multipart":
+                        resp = await client.post(
+                            transport.url,
+                            data=transport.form_fields,
+                            files=transport.multipart_files,
+                            headers=headers_multipart,
+                        )
+                    else:
+                        resp = await client.post(
+                            transport.url,
+                            json=transport.json_body,
+                            headers=headers_json,
+                        )
+                if resp.status_code in RETRYABLE_HTTP_STATUS_CODES and attempt < DEFAULT_MAX_RETRIES - 1:
+                    delay = DEFAULT_BASE_DELAY_SECONDS * (2**attempt)
+                    await asyncio.sleep(delay)
+                    continue
+                resp.raise_for_status()
+                response_json = resp.json()
+                break
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in RETRYABLE_HTTP_STATUS_CODES and attempt < DEFAULT_MAX_RETRIES - 1:
+                    delay = DEFAULT_BASE_DELAY_SECONDS * (2**attempt)
+                    await asyncio.sleep(delay)
+                    continue
+                body = exc.response.text if exc.response is not None else str(exc)
+                raise RuntimeError(
+                    f"Image endpoint HTTP error {getattr(exc.response, 'status_code', 'unknown')}: {body}"
+                ) from exc
+            except (httpx.ConnectError, httpx.ReadTimeout) as exc:
+                if attempt < DEFAULT_MAX_RETRIES - 1:
+                    delay = DEFAULT_BASE_DELAY_SECONDS * (2**attempt)
+                    await asyncio.sleep(delay)
+                    continue
+                raise RuntimeError(f"Image endpoint network error: {exc}") from exc
+
+        reject_identical_to = input_image_bytes if input_image_bytes else None
+        image_bytes = self._extract_image_bytes_from_payload(
+            response_json,
+            field_hint=target.response_image_field,
+            reject_identical_to=reject_identical_to,
+        )
+        if not image_bytes:
+            image_url = self._extract_image_url_from_payload(response_json)
+            if image_url:
+                try:
+                    async with httpx.AsyncClient(timeout=target.timeout_seconds) as client:
+                        img_resp = await client.get(image_url)
+                    img_resp.raise_for_status()
+                    if img_resp.content:
+                        got = bytes(img_resp.content)
+                        if reject_identical_to is not None and got == reject_identical_to:
+                            image_bytes = None
+                        else:
+                            image_bytes = got
+                except Exception:
+                    # Keep original extraction error if URL fetch fails.
+                    image_bytes = None
+        if not image_bytes:
+            diag = self._summarize_image_response_for_error(response_json)
+            extra = ""
+            if reject_identical_to:
+                extra = "Every decodable image matched the input bytes (model echoed the source). "
+            raise RuntimeError(f"Image endpoint returned no usable edited image. {extra}{diag}")
+        return image_bytes
+
+    @staticmethod
+    def _summarize_image_response_for_error(payload: dict[str, Any]) -> str:
+        """Short, log-safe hint when the response JSON has no extractable image."""
+        if not isinstance(payload, dict):
+            return "response was not a JSON object."
+        keys = sorted(payload.keys())
+        hint = f"top_level_keys={keys}"
+        choices = payload.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            msg = choices[0].get("message")
+            if isinstance(msg, dict):
+                c = msg.get("content")
+                ctype = type(c).__name__
+                cpreview = ""
+                if isinstance(c, str):
+                    cpreview = c[:120].replace("\n", " ")
+                elif isinstance(c, list):
+                    cpreview = f"len={len(c)} parts={[p.get('type') if isinstance(p, dict) else type(p).__name__ for p in c[:5]]}"
+                hint += f"; message.content_type={ctype} preview={cpreview!r}"
+                if isinstance(msg.get("images"), list):
+                    hint += f"; message.images_len={len(msg['images'])}"
+                if isinstance(msg.get("parts"), list):
+                    hint += f"; message.parts_len={len(msg['parts'])}"
+                if isinstance(msg.get("reasoning_content"), str) and msg["reasoning_content"].strip():
+                    hint += "; message.reasoning_content_non_empty=1"
+        if isinstance(payload.get("data"), list):
+            hint += f"; data_len={len(payload['data'])}"
+        return hint
+
     def _should_try_fallback(self, exc: Exception) -> bool:
         """Check whether an exception is eligible for fallback profile retry.
 
@@ -283,6 +474,196 @@ class OpenAICompatibleLLMClient:
             except Exception:
                 return str(body)
         return str(exc)
+
+    @staticmethod
+    def _chat_completion_message_media_candidates(message: dict[str, Any]) -> list[Any]:
+        """Collect image-like values from an OpenAI-style chat ``message`` (multimodal image outputs)."""
+        found: list[Any] = []
+        images = message.get("images")
+        if isinstance(images, list):
+            for item in images:
+                if isinstance(item, dict):
+                    for key in ("b64_json", "image_base64", "base64", "url", "data"):
+                        if key in item:
+                            found.append(item.get(key))
+                    nested = item.get("image_url")
+                    if isinstance(nested, str):
+                        found.append(nested)
+                    elif isinstance(nested, dict):
+                        found.append(nested.get("url"))
+        content = message.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                ptype = part.get("type")
+                if ptype == "image_url":
+                    iu = part.get("image_url")
+                    if isinstance(iu, str):
+                        found.append(iu)
+                    elif isinstance(iu, dict):
+                        found.append(iu.get("url"))
+                elif isinstance(ptype, str) and "image" in ptype.lower():
+                    for key in ("url", "uri", "image_url", "b64_json", "image_base64", "base64"):
+                        if key not in part:
+                            continue
+                        val = part.get(key)
+                        if isinstance(val, dict) and "url" in val:
+                            found.append(val.get("url"))
+                        else:
+                            found.append(val)
+                inline = part.get("inline_data") or part.get("inlineData")
+                if isinstance(inline, dict) and inline.get("data") is not None:
+                    found.append(inline.get("data"))
+                for key in ("b64_json", "image_base64", "base64", "image_url"):
+                    if key in part:
+                        found.append(part.get(key))
+        elif isinstance(content, str):
+            found.extend(_data_image_urls_in_text(content))
+        parts = message.get("parts")
+        if isinstance(parts, list):
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                ptype = part.get("type")
+                if ptype == "image_url":
+                    iu = part.get("image_url")
+                    if isinstance(iu, str):
+                        found.append(iu)
+                    elif isinstance(iu, dict):
+                        found.append(iu.get("url"))
+                elif isinstance(ptype, str) and "image" in ptype.lower():
+                    for key in ("url", "uri", "image_url", "b64_json", "image_base64", "base64"):
+                        if key not in part:
+                            continue
+                        val = part.get(key)
+                        if isinstance(val, dict) and "url" in val:
+                            found.append(val.get("url"))
+                        else:
+                            found.append(val)
+                inline = part.get("inline_data") or part.get("inlineData")
+                if isinstance(inline, dict) and inline.get("data") is not None:
+                    found.append(inline.get("data"))
+        rc = message.get("reasoning_content")
+        if isinstance(rc, str) and rc.strip():
+            found.extend(_data_image_urls_in_text(rc))
+            found.extend(_http_image_urls_in_text(rc))
+        return found
+
+    def _extract_image_bytes_from_payload(
+        self,
+        payload: dict[str, Any],
+        field_hint: str | None = None,
+        *,
+        reject_identical_to: bytes | None = None,
+    ) -> bytes | None:
+        """Extract image bytes from common image API payload shapes.
+
+        When ``reject_identical_to`` is set (image-edit with an input bitmap), skip any
+        decoded candidate whose bytes exactly match the input (echo / no-op edit).
+        """
+        if not isinstance(payload, dict):
+            return None
+
+        candidates: list[Any] = []
+        if field_hint:
+            candidates.append(_dig_json_path(payload, field_hint))
+        choices = payload.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0]
+            if isinstance(first, dict):
+                msg = first.get("message")
+                if isinstance(msg, dict):
+                    candidates.extend(self._chat_completion_message_media_candidates(msg))
+        for path in (
+            "data.0.b64_json",
+            "data.0.image_base64",
+            "data.0.base64",
+            "output.0.b64_json",
+            "images.0.b64_json",
+            "images.0.image_base64",
+            "choices.0.message.content.0.image_base64",
+            "choices.0.message.content.0.image_url.url",
+            "choices.0.message.images.0.b64_json",
+            "candidates.0.content.parts.0.inline_data.data",
+            "result.images.0.b64_json",
+        ):
+            candidates.append(_dig_json_path(payload, path))
+
+        def _decode_candidate(value: Any) -> bytes | None:
+            if isinstance(value, dict):
+                for key in ("b64_json", "image_base64", "base64", "data", "url"):
+                    if key in value:
+                        return _decode_candidate(value.get(key))
+                return None
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return None
+                if text.startswith("data:image/"):
+                    _head, _sep, body = text.partition(",")
+                    if not body:
+                        return None
+                    try:
+                        return base64.b64decode(body)
+                    except Exception:
+                        return None
+                try:
+                    return base64.b64decode(text)
+                except Exception:
+                    return None
+            return None
+
+        for item in candidates:
+            decoded = _decode_candidate(item)
+            if not decoded:
+                continue
+            if reject_identical_to is not None and decoded == reject_identical_to:
+                logger.info(
+                    "Skipping image candidate identical to edit input (%d bytes); "
+                    "treating as upstream echo/mirror, not edited output.",
+                    len(decoded),
+                )
+                continue
+            return decoded
+        return None
+
+    def _extract_image_url_from_payload(self, payload: dict[str, Any]) -> str | None:
+        """Extract an image URL when endpoint returns URL instead of base64."""
+        if not isinstance(payload, dict):
+            return None
+
+        for path in (
+            "data.0.url",
+            "images.0.url",
+            "output.0.url",
+            "choices.0.message.content.0.image_url.url",
+            "choices.0.message.content.0.image_url",
+            "choices.0.message.images.0.url",
+            "result.images.0.url",
+        ):
+            value = _dig_json_path(payload, path)
+            if isinstance(value, str):
+                url = value.strip()
+                if url.startswith("http://") or url.startswith("https://"):
+                    return url
+        choices = payload.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0]
+            if isinstance(first, dict):
+                msg = first.get("message")
+                if isinstance(msg, dict):
+                    for raw in self._chat_completion_message_media_candidates(msg):
+                        if isinstance(raw, str):
+                            u = raw.strip()
+                            if u.startswith("http://") or u.startswith("https://"):
+                                return u
+                    c = msg.get("content")
+                    if isinstance(c, str):
+                        for u in _http_image_urls_in_text(c):
+                            if u.startswith("http://") or u.startswith("https://"):
+                                return u
+        return None
 
     def _load_openai_symbols(self) -> None:
         """Load OpenAI SDK symbols lazily to avoid hard import-time failures."""
