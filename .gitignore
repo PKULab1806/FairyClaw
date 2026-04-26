@@ -178,8 +178,10 @@ test/
 /USER.md
 /SOUL.md
 /MEMORY.md
-# Per-session gap-repair JSON (when memory_root is inside the repo)
+# Per-session gap-repair / compression state (when memory_root is inside the repo)
 .session_gap_repair/
+.session_unloaded_segments/
+.session_memory_extraction/
 
 # Reins (local DuckDB ledger; may contain usage traces)
 .reins/
