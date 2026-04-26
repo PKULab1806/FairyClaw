@@ -1,3 +1,7 @@
 recency_window: 6
 tool_result_max_chars: 500
 assistant_message_max_chars: 1200
+image_max_edge: 768
+image_jpeg_quality: 55
+image_png_compress_level: 9
+reloaded_image_guard_messages: 6

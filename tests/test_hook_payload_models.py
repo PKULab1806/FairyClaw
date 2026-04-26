@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 FairyClaw contributors, PKU DS Lab
 import asyncio
+from pathlib import Path
 
 from fairyclaw.capabilities.compression_hooks.scripts.context_compression import execute_hook as execute_before_llm_hook
+from fairyclaw.capabilities.compression_hooks.scripts._unloaded_segments_state import load_unloaded_segments_state
 from fairyclaw.core.agent.context.history_ir import SessionMessageBlock, SessionMessageRole, TextBody, ToolCallRound, UserTurn
 from fairyclaw.core.agent.hooks.protocol import (
     HookExecutionContext,
@@ -22,6 +24,7 @@ from fairyclaw.core.agent.hooks.protocol import (
     to_openai_messages,
 )
 from fairyclaw.core.capabilities.models import HookDefinition
+from fairyclaw.core.domain import ContentSegment
 from fairyclaw.core.events.bus import EventType, RuntimeEvent
 from fairyclaw.core.events.payloads import (
     FileUploadReceivedEventPayload,
@@ -227,7 +230,7 @@ def test_before_llm_hook_preserves_tool_round_suffix_when_rebuilding_user_turn()
             is_sub_session=False,
         ),
         tools=[],
-        token_budget=20,
+        token_budget=1,
     )
     result = asyncio.run(
         execute_before_llm_hook(
@@ -269,7 +272,7 @@ def test_before_llm_hook_preserves_injected_system_messages_during_rebuild() -> 
             is_sub_session=False,
         ),
         tools=[],
-        token_budget=20,
+        token_budget=1,
     )
     result = asyncio.run(
         execute_before_llm_hook(
@@ -280,7 +283,7 @@ def test_before_llm_hook_preserves_injected_system_messages_during_rebuild() -> 
                     turn_id="turn_1",
                     task_type="general",
                     is_sub_session=False,
-                    token_budget=20,
+                    token_budget=1,
                 ),
                 payload=payload,
             )
@@ -290,3 +293,67 @@ def test_before_llm_hook_preserves_injected_system_messages_during_rebuild() -> 
     rebuilt_messages = result.patched_payload.turn.llm_messages
     assert rebuilt_messages[1].role == "system"
     assert "RecalledMemory" in str(rebuilt_messages[1].content)
+
+
+def _tiny_png_data_url() -> str:
+    png_b64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"
+        "/x8AAwMCAO7Z7xkAAAAASUVORK5CYII="
+    )
+    return f"data:image/png;base64,{png_b64}"
+
+
+def test_before_llm_hook_unloads_old_image_segments_instead_of_dropping(tmp_path: Path, monkeypatch) -> None:
+    from fairyclaw.capabilities.compression_hooks.scripts import _unloaded_segments_state as state_mod
+    from fairyclaw.capabilities.compression_hooks.scripts import context_compression as compression_mod
+
+    monkeypatch.setattr(state_mod, "resolve_memory_root", lambda mkdir=True: tmp_path)
+    monkeypatch.setattr(compression_mod, "_count_prompt_tokens", lambda counter, messages, payload: 100)
+    rebuilt_counts = iter([100, 100, 100, 0, 0])
+    monkeypatch.setattr(
+        compression_mod,
+        "_count_rebuilt_prompt",
+        lambda counter, payload, history_items, system_prompt, extra_system_messages: next(rebuilt_counts),
+    )
+    payload = BeforeLlmCallHookPayload(
+        turn=LlmTurnContext(
+            llm_messages=[LlmChatMessage(role="system", content="system"), LlmChatMessage(role="user", content="look")],
+            history_items=[
+                SessionMessageBlock.from_segments(
+                    SessionMessageRole.USER,
+                    (ContentSegment.image_url_segment(_tiny_png_data_url()),),
+                )
+                or SessionMessageBlock(role=SessionMessageRole.USER, body=TextBody(text="fallback")),
+                SessionMessageBlock(role=SessionMessageRole.ASSISTANT, body=TextBody(text="recent assistant")),
+            ],
+            user_turn=UserTurn(message=SessionMessageBlock(role=SessionMessageRole.USER, body=TextBody(text="look"))),
+            session_id="sess_img_unload",
+            task_type="image",
+            is_sub_session=False,
+        ),
+        tools=[],
+        token_budget=20,
+    )
+    result = asyncio.run(
+        execute_before_llm_hook(
+            HookStageInput(
+                stage=HookStage.BEFORE_LLM_CALL,
+                context=HookExecutionContext(
+                    session_id="sess_img_unload",
+                    turn_id="turn_img_unload",
+                    task_type="image",
+                    is_sub_session=False,
+                    token_budget=20,
+                ),
+                payload=payload,
+            )
+        )
+    )
+    assert result.patched_payload is not None
+    rebuilt_history = result.patched_payload.turn.history_items
+    assert rebuilt_history
+    assert isinstance(rebuilt_history[0], SessionMessageBlock)
+    placeholder_text = rebuilt_history[0].as_plain_text()
+    assert "image context unloaded" in placeholder_text
+    state = load_unloaded_segments_state(session_id="sess_img_unload", memory_root=str(tmp_path))
+    assert len(state["records"]) == 1

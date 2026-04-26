@@ -4,8 +4,49 @@
   "always_enable_planner": true,
   "always_enable_subagent": true,
   "manifest_version": "1.1",
-  "capabilities": [],
+  "capabilities": [
+    {
+      "name": "reload_unloaded_segments",
+      "description": "Reload segments previously unloaded by context compression. Use this when context shows an unload_id placeholder.",
+      "type": "Tool",
+      "schema": {
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["latest", "all", "ids"],
+              "default": "latest",
+              "description": "Reload the newest unloaded segment(s), all unloaded segments, or specific unload_ids."
+            },
+            "unload_ids": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Specific unload ids to reload when mode=ids."
+            },
+            "limit": {
+              "type": "integer",
+              "description": "Maximum number of unloaded segments to reload when mode=latest.",
+              "default": 1
+            }
+          }
+        }
+      },
+      "script": "reload_unloaded_segments.py",
+      "record_event": true
+    }
+  ],
   "hooks": [
+    {
+      "name": "compression_tools_availability_gate",
+      "stage": "tools_prepared",
+      "script": "compression_tools_availability_gate.py",
+      "priority": 20,
+      "enabled": true,
+      "timeout_ms": 300,
+      "on_error": "continue",
+      "config": {}
+    },
     {
       "name": "context_compression",
       "stage": "before_llm_call",

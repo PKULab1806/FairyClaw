@@ -1,17 +1,30 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 FairyClaw contributors, PKU DS Lab
-"""Context compression hook for prompt budgeting."""
+"""Context compression hook for prompt budgeting.
+
+Per-session unload bookkeeping lives in ``<memory_root>/.session_unloaded_segments/``
+(see ``_unloaded_segments_state.py``). Memory-extraction hook counters are **not**
+written into ``MEMORY.md``; they persist under ``<memory_root>/.session_memory_extraction/``
+(see ``session_memory`` capability).
+"""
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import logging
 from collections import deque
 from dataclasses import replace
 from pathlib import Path
 from typing import Iterable
 
+from fairyclaw.capabilities.compression_hooks.scripts._unloaded_segments_state import (
+    append_unloaded_segment_record,
+    restored_segment_fingerprints,
+)
 from fairyclaw.config.loader import load_yaml
-from fairyclaw.core.agent.context.history_ir import ChatHistoryItem, SessionMessageBlock, ToolCallRound
+from fairyclaw.core.agent.context.history_ir import ChatHistoryItem, SegmentsBody, SessionMessageBlock, ToolCallRound
 from fairyclaw.core.agent.context.llm_message_assembler import LlmMessageAssembler
 from fairyclaw.core.agent.hooks.protocol import (
     BeforeLlmCallHookPayload,
@@ -21,7 +34,8 @@ from fairyclaw.core.agent.hooks.protocol import (
     LlmChatMessage,
 )
 from fairyclaw.core.agent.types import SystemPromptPart
-from fairyclaw.core.domain import ContentSegment
+from fairyclaw.core.domain import ContentSegment, SegmentType
+from fairyclaw.infrastructure.media.image_compress import compress_image_available, compress_image_bytes
 from fairyclaw.infrastructure.tokenizer.counter import TokenCounter
 
 logger = logging.getLogger(__name__)
@@ -31,6 +45,10 @@ DEFAULT_CONFIG = {
     "recency_window": 6,
     "tool_result_max_chars": 500,
     "assistant_message_max_chars": 1200,
+    "image_max_edge": 768,
+    "image_jpeg_quality": 55,
+    "image_png_compress_level": 9,
+    "reloaded_image_guard_messages": 6,
 }
 
 
@@ -66,6 +84,9 @@ async def execute_hook(
         history_items=payload.turn.history_items,
         tool_result_max_chars=int(config["tool_result_max_chars"]),
         assistant_message_max_chars=int(config["assistant_message_max_chars"]),
+        image_max_edge=int(config["image_max_edge"]),
+        image_jpeg_quality=int(config["image_jpeg_quality"]),
+        image_png_compress_level=int(config["image_png_compress_level"]),
         sub_session_user_prefix_end=sub_u_end,
     )
     if _count_rebuilt_prompt(counter, payload, compressed_history, system_prompt, extra_system_messages) <= token_budget:
@@ -108,6 +129,23 @@ async def execute_hook(
     sub_prefix = (
         _first_user_message_exclusive_end(compressed_history) if payload.turn.is_sub_session else 0
     )
+    while _count_rebuilt_prompt(
+        counter,
+        payload,
+        compressed_history,
+        system_prompt,
+        extra_system_messages,
+    ) > token_budget:
+        unloaded_history = _unload_oldest_image_message(
+            session_id=payload.turn.session_id,
+            history_items=compressed_history,
+            protected_prefix=sub_prefix,
+            reloaded_guard_messages=int(config["reloaded_image_guard_messages"]),
+        )
+        if unloaded_history is None:
+            break
+        compressed_history = unloaded_history
+
     while (
         len(compressed_history) > sub_prefix + _latest_turn_suffix_length(compressed_history)
         and _count_rebuilt_prompt(
@@ -119,9 +157,10 @@ async def execute_hook(
         )
         > token_budget
     ):
-        compressed_history = (
-            compressed_history[:sub_prefix] + compressed_history[sub_prefix + 1 :]
-        )
+        drop_idx = _find_droppable_index(compressed_history, start=sub_prefix)
+        if drop_idx is None:
+            break
+        compressed_history = compressed_history[:drop_idx] + compressed_history[drop_idx + 1 :]
 
     return _build_output(
         payload,
@@ -177,6 +216,14 @@ def _load_config() -> dict[str, int]:
         "assistant_message_max_chars": int(
             raw.get("assistant_message_max_chars", DEFAULT_CONFIG["assistant_message_max_chars"])
         ),
+        "image_max_edge": int(raw.get("image_max_edge", DEFAULT_CONFIG["image_max_edge"])),
+        "image_jpeg_quality": int(raw.get("image_jpeg_quality", DEFAULT_CONFIG["image_jpeg_quality"])),
+        "image_png_compress_level": int(
+            raw.get("image_png_compress_level", DEFAULT_CONFIG["image_png_compress_level"])
+        ),
+        "reloaded_image_guard_messages": int(
+            raw.get("reloaded_image_guard_messages", DEFAULT_CONFIG["reloaded_image_guard_messages"])
+        ),
     }
 
 
@@ -226,6 +273,9 @@ def _truncate_large_items(
     history_items: Iterable[ChatHistoryItem],
     tool_result_max_chars: int,
     assistant_message_max_chars: int,
+    image_max_edge: int,
+    image_jpeg_quality: int,
+    image_png_compress_level: int,
     *,
     sub_session_user_prefix_end: int = 0,
 ) -> list[ChatHistoryItem]:
@@ -238,6 +288,13 @@ def _truncate_large_items(
     head_keep = max(0, sub_session_user_prefix_end)
     truncated: list[ChatHistoryItem] = []
     for idx, item in enumerate(items):
+        if isinstance(item, SessionMessageBlock):
+            item = _compress_message_images(
+                item,
+                image_max_edge=image_max_edge,
+                image_jpeg_quality=image_jpeg_quality,
+                image_png_compress_level=image_png_compress_level,
+            )
         preserve = idx >= first_protected or idx < head_keep
         if preserve:
             truncated.append(item)
@@ -266,6 +323,221 @@ def _truncate_assistant_message(item: SessionMessageBlock, max_chars: int) -> Se
         return item
     rebuilt = SessionMessageBlock.from_segments(item.role, (ContentSegment.text_segment(truncated_text),))
     return rebuilt or item
+
+
+def _compress_message_images(
+    item: SessionMessageBlock,
+    *,
+    image_max_edge: int,
+    image_jpeg_quality: int,
+    image_png_compress_level: int,
+) -> SessionMessageBlock:
+    """Lower image payload size for image_url data URLs while preserving message shape."""
+    if not isinstance(item.body, SegmentsBody):
+        return item
+    changed = False
+    rebuilt_segments: list[ContentSegment] = []
+    for segment in item.body.segments:
+        if segment.type != SegmentType.IMAGE_URL:
+            rebuilt_segments.append(segment)
+            continue
+        image_url = segment.image_url.get("url") if isinstance(segment.image_url, dict) else None
+        if not isinstance(image_url, str) or not image_url.startswith("data:image/"):
+            rebuilt_segments.append(segment)
+            continue
+        compressed_url = _compress_image_data_url(
+            image_url,
+            image_max_edge=image_max_edge,
+            image_jpeg_quality=image_jpeg_quality,
+            image_png_compress_level=image_png_compress_level,
+        )
+        if compressed_url and compressed_url != image_url:
+            saved = len(image_url) - len(compressed_url)
+            if saved >= 2048:
+                logger.info(
+                    "context_compress_message_image_data_url: data_url_chars %d -> %d (saved ~%d, image_max_edge=%s)",
+                    len(image_url),
+                    len(compressed_url),
+                    saved,
+                    image_max_edge,
+                )
+            else:
+                logger.debug(
+                    "context_compress_message_image_data_url: data_url_chars %d -> %d (image_max_edge=%s)",
+                    len(image_url),
+                    len(compressed_url),
+                    image_max_edge,
+                )
+            rebuilt_segments.append(ContentSegment.image_url_segment(compressed_url))
+            changed = True
+        else:
+            rebuilt_segments.append(segment)
+    if not changed:
+        return item
+    rebuilt = SessionMessageBlock.from_segments(item.role, tuple(rebuilt_segments))
+    return rebuilt or item
+
+
+def _compress_image_data_url(
+    url: str,
+    *,
+    image_max_edge: int,
+    image_jpeg_quality: int,
+    image_png_compress_level: int,
+) -> str | None:
+    """Downscale a data URL image to reduce prompt token cost."""
+    if not compress_image_available():
+        return None
+    head, sep, body = url.partition(",")
+    if not sep or ";base64" not in head:
+        return None
+    try:
+        raw = base64.b64decode(body)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    mime = head[5:].split(";", 1)[0].strip().lower() or "image/png"
+    new_raw, new_mime = compress_image_bytes(
+        raw,
+        mime,
+        image_max_edge=image_max_edge,
+        image_jpeg_quality=image_jpeg_quality,
+        image_png_compress_level=image_png_compress_level,
+    )
+    if new_raw == raw:
+        return url
+    return f"data:{new_mime};base64,{base64.b64encode(new_raw).decode('ascii')}"
+
+
+def _unload_oldest_image_message(
+    *,
+    session_id: str,
+    history_items: list[ChatHistoryItem],
+    protected_prefix: int,
+    reloaded_guard_messages: int,
+) -> list[ChatHistoryItem] | None:
+    """Replace the oldest removable image message with a lightweight unload placeholder."""
+    if not history_items:
+        return None
+    protect = _latest_turn_suffix_length(history_items)
+    first_protected = len(history_items) - protect
+    recent_fps = restored_segment_fingerprints(
+        session_id=session_id,
+    )
+    for idx in range(max(0, protected_prefix), max(0, first_protected)):
+        item = history_items[idx]
+        unloaded = _replace_images_with_unload_placeholder(
+            session_id=session_id,
+            item=item,
+            history_index=idx,
+            history_items=history_items,
+            recent_restored_fingerprints=recent_fps,
+            reloaded_guard_messages=reloaded_guard_messages,
+        )
+        if unloaded is None:
+            continue
+        patched = list(history_items)
+        patched[idx] = unloaded
+        return patched
+    return None
+
+
+def _replace_images_with_unload_placeholder(
+    *,
+    session_id: str,
+    item: ChatHistoryItem,
+    history_index: int,
+    history_items: list[ChatHistoryItem],
+    recent_restored_fingerprints: set[str] | None = None,
+    reloaded_guard_messages: int = 0,
+) -> SessionMessageBlock | None:
+    if not isinstance(item, SessionMessageBlock) or not isinstance(item.body, SegmentsBody):
+        return None
+    kept_segments: list[ContentSegment] = []
+    unloaded_segments: list[ContentSegment] = []
+    recent_set = recent_restored_fingerprints or set()
+    message_blocks_after = _message_blocks_after_index(history_items, history_index)
+    for segment in item.body.segments:
+        if segment.type == SegmentType.IMAGE_URL:
+            if (
+                _segment_fingerprint(segment) in recent_set
+                and message_blocks_after < max(0, int(reloaded_guard_messages))
+            ):
+                kept_segments.append(segment)
+                continue
+            unloaded_segments.append(segment)
+        else:
+            kept_segments.append(segment)
+    if not unloaded_segments:
+        return None
+    unload_id = _make_unload_id(item=item, history_index=history_index, unloaded_segments=unloaded_segments)
+    placeholder = (
+        f"[image context unloaded: unload_id={unload_id}; images={len(unloaded_segments)}; "
+        "use reload_unloaded_segments to restore]"
+    )
+    append_unloaded_segment_record(
+        session_id=session_id,
+        unload_id=unload_id,
+        role=item.role.value,
+        segments=[segment.to_dict() for segment in unloaded_segments],
+        placeholder=placeholder,
+        source_summary=f"history_index={history_index}",
+    )
+    rebuilt_segments = list(kept_segments)
+    rebuilt_segments.append(ContentSegment.text_segment(placeholder))
+    rebuilt = SessionMessageBlock.from_segments(item.role, tuple(rebuilt_segments))
+    return rebuilt
+
+
+def _make_unload_id(
+    *,
+    item: SessionMessageBlock,
+    history_index: int,
+    unloaded_segments: list[ContentSegment],
+) -> str:
+    raw = json.dumps(
+        {
+            "role": item.role.value,
+            "history_index": history_index,
+            "segments": [segment.to_dict() for segment in unloaded_segments],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+    return f"imgu_{digest}"
+
+
+def _find_droppable_index(history_items: list[ChatHistoryItem], *, start: int) -> int | None:
+    """Find a prefix item that can be dropped without losing unload placeholders."""
+    protect = _latest_turn_suffix_length(history_items)
+    first_protected = len(history_items) - protect
+    for idx in range(max(0, start), max(0, first_protected)):
+        item = history_items[idx]
+        if not isinstance(item, SessionMessageBlock):
+            return idx
+        text = item.as_plain_text()
+        if "image context unloaded:" in text:
+            continue
+        return idx
+    return None
+
+
+def _segment_fingerprint(segment: ContentSegment) -> str:
+    try:
+        raw = json.dumps(segment.to_dict(), ensure_ascii=False, sort_keys=True)
+    except Exception:
+        raw = str(segment.to_dict())
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _message_blocks_after_index(history_items: list[ChatHistoryItem], index: int) -> int:
+    count = 0
+    for item in history_items[index + 1 :]:
+        if isinstance(item, SessionMessageBlock):
+            count += 1
+    return count
 
 
 def _keep_recent_history(
