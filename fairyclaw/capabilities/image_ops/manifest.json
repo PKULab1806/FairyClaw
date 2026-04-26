@@ -1,14 +1,14 @@
 {
   "name": "ImageOps",
-  "description": "Image context injection and local image editing tools. Use this group for multimodal image understanding prep and image style/background transformations.",
+  "description": "Image context injection and endpoint-backed image generation/edit tools.",
   "always_enable_planner": false,
   "always_enable_subagent": false,
   "manifest_version": "1.1",
-  "routing_hint": "Enable for image analysis/editing requests, especially when tasks involve local image files, style transfer, or scene/background changes.",
+  "routing_hint": "Enable for image understanding or image deliverable tasks.",
   "capabilities": [
     {
       "name": "inject_image_context",
-      "description": "Load an image from file_path/file_id/url and return an OpenAI-compatible image_url content segment. For local files and file_id, the URL is a data:mime;base64 payload so multimodal models can directly read pixels.",
+      "description": "Load a picture into session memory when it is NOT already visible to you as an image_url in this conversation (e.g. not covered by delegation attachments). Do NOT call if the same image is already present as image_url above. Path text in the task alone is not enough reason to inject.",
       "type": "Tool",
       "schema": {
         "parameters": {
@@ -16,30 +16,22 @@
           "properties": {
             "input_ref": {
               "type": "object",
+              "description": "Exactly one of `file_path` | `file_id` | `url` (same schema as `generate_or_edit_image`). Prefer `file_path` for files on disk (`/abs/path`). `file:///abs/path` is accepted and normalized server-side. `file_id` = upload id `file_`+hex only (not `imgu_...`). `url` = `data:image/...;base64,...` or `http(s)://` image URL (server downloads, size-capped).",
               "properties": {
-                "file_path": { "type": "string" },
-                "file_id": { "type": "string" },
-                "url": { "type": "string" }
+                "file_path": {
+                  "type": "string",
+                  "description": "Absolute path `/...` readable on server. `file:///...` is normalized automatically; plain `/...` is preferred in prompts."
+                },
+                "file_id": {
+                  "type": "string",
+                  "description": "Session upload id: `file_` plus hex from send_file/list_session_files. Not `imgu_...` or other chat handles."
+                },
+                "url": {
+                  "type": "string",
+                  "description": "`data:image/...;base64,...` or `http(s)://` URL whose body is an image."
+                }
               },
               "additionalProperties": false
-            },
-            "mime_hint": {
-              "type": "string",
-              "description": "Optional MIME hint for local bytes when type probing is ambiguous."
-            },
-            "max_bytes": {
-              "type": "integer",
-              "description": "Maximum image bytes allowed before truncation/error handling."
-            },
-            "append_text_hint": {
-              "type": "string",
-              "description": "Optional text segment to pair with the image context."
-            },
-            "scope": {
-              "type": "string",
-              "enum": ["current_turn", "session_memory"],
-              "default": "current_turn",
-              "description": "current_turn returns segment only; session_memory also persists the image segment into session history."
             }
           },
           "required": ["input_ref"]
@@ -49,8 +41,8 @@
       "record_event": true
     },
     {
-      "name": "apply_image_style",
-      "description": "Apply a configurable local style profile to an input image and write the styled output image.",
+      "name": "generate_or_edit_image",
+      "description": "Call configured image_generation endpoint profile to generate/edit an image from prompt plus optional input image, then write the output file.",
       "type": "Tool",
       "schema": {
         "parameters": {
@@ -58,125 +50,58 @@
           "properties": {
             "input_ref": {
               "type": "object",
+              "description": "Optional. When an input image is required: exactly one of `file_path` | `file_id` | `url` (same schema as `inject_image_context`). Prefer `file_path` for files on disk (`/abs/path`). `file:///abs/path` is normalized server-side. `file_id` = `file_`+hex only. `url` = data URL or `http(s)://` image fetch.",
               "properties": {
-                "file_path": { "type": "string" },
-                "file_id": { "type": "string" }
+                "file_path": {
+                  "type": "string",
+                  "description": "Absolute path `/...` readable on server. `file:///...` is normalized automatically; plain `/...` is preferred in prompts."
+                },
+                "file_id": {
+                  "type": "string",
+                  "description": "Session upload id: `file_` plus hex from send_file/list_session_files. Not `imgu_...` or other chat handles."
+                },
+                "url": {
+                  "type": "string",
+                  "description": "`data:image/...;base64,...` or `http(s)://` URL whose body is an image."
+                }
               },
               "additionalProperties": false
+            },
+            "prompt": {
+              "type": "string",
+              "description": "Image generation/edit instruction."
             },
             "output_path": {
               "type": "string",
               "description": "Output image path (absolute or workspace-relative)."
             },
-            "style_profile": {
+            "profile_name": {
               "type": "string",
-              "description": "Style profile id, e.g. toon_v1, watercolor_v1, oilpaint_v1, pixelart_v1, sketch_v1."
+              "description": "LLM profile name for image generation/editing endpoint.",
+              "default": "image_generation"
             },
-            "intensity": {
-              "type": "number",
-              "minimum": 0.0,
-              "maximum": 1.0,
-              "default": 0.7
-            },
-            "preserve_edges": {
-              "type": "boolean",
-              "default": true
-            },
-            "seed": {
-              "type": "integer",
-              "description": "Optional deterministic seed for noise-based style details."
+            "size": {
+              "type": "string",
+              "description": "Optional image size hint for endpoint."
             }
           },
-          "required": ["input_ref", "output_path", "style_profile"]
+          "required": ["prompt", "output_path"]
         }
       },
-      "script": "apply_image_style.py",
+      "script": "generate_or_edit_image.py",
       "record_event": true
-    },
+    }
+  ],
+  "hooks": [
     {
-      "name": "compose_subject_background",
-      "description": "Compose a segmented subject from input image onto a generated/preset/new background while preserving subject identity.",
-      "type": "Tool",
-      "schema": {
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "input_ref": {
-              "type": "object",
-              "properties": {
-                "file_path": { "type": "string" },
-                "file_id": { "type": "string" }
-              },
-              "additionalProperties": false
-            },
-            "output_path": {
-              "type": "string"
-            },
-            "background_spec": {
-              "type": "object",
-              "properties": {
-                "type": {
-                  "type": "string",
-                  "enum": ["preset", "gradient", "procedural", "image"]
-                },
-                "id_or_params": {
-                  "type": "object",
-                  "description": "Preset id or background parameters."
-                }
-              },
-              "required": ["type"],
-              "additionalProperties": false
-            },
-            "subject_policy": {
-              "type": "object",
-              "properties": {
-                "preserve_subject": { "type": "boolean", "default": true },
-                "segmentation_mode": {
-                  "type": "string",
-                  "enum": ["auto", "grabcut", "saliency"],
-                  "default": "auto"
-                }
-              },
-              "additionalProperties": false
-            },
-            "placement": {
-              "type": "object",
-              "properties": {
-                "anchor": {
-                  "type": "string",
-                  "enum": ["center", "left", "right"],
-                  "default": "center"
-                },
-                "scale": {
-                  "type": "number",
-                  "minimum": 0.2,
-                  "maximum": 1.8,
-                  "default": 1.0
-                },
-                "margin_ratio": {
-                  "type": "number",
-                  "minimum": 0.0,
-                  "maximum": 0.4,
-                  "default": 0.05
-                }
-              },
-              "additionalProperties": false
-            },
-            "blend_policy": {
-              "type": "object",
-              "properties": {
-                "feather_radius": { "type": "integer", "minimum": 0, "maximum": 30, "default": 8 },
-                "shadow_strength": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.3 },
-                "color_match_strength": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.4 }
-              },
-              "additionalProperties": false
-            }
-          },
-          "required": ["input_ref", "output_path", "background_spec"]
-        }
-      },
-      "script": "compose_subject_background.py",
-      "record_event": true
+      "name": "image_tools_availability_gate",
+      "stage": "tools_prepared",
+      "script": "image_tools_availability_gate.py",
+      "priority": 20,
+      "enabled": true,
+      "timeout_ms": 500,
+      "on_error": "continue",
+      "config": {}
     }
   ]
 }
