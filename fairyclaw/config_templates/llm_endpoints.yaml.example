@@ -35,8 +35,7 @@ profiles:
     model: dall-e-3
     api_key_env: OPENAI_API_KEY
     timeout_seconds: 120
-    request_format: openai_images_edits_json
-    api_path: /images/edits
+    request_format: images_edits_img_urls_json
   code:
     api_base: https://api.openai.com/v1
     model: gpt-4o
