@@ -32,6 +32,18 @@ class StubClient:
         return self.result
 
 
+class SequencedStubClient:
+    def __init__(self, results: list[ChatResult]) -> None:
+        self.results = list(results)
+        self.called = 0
+
+    async def chat_with_tools(self, messages, tools):
+        self.called += 1
+        if len(self.results) > 1:
+            return self.results.pop(0)
+        return self.results[0]
+
+
 def _make_turn_context(session_id: str = "sess_force") -> LlmTurnContext:
     return LlmTurnContext(
         llm_messages=[LlmChatMessage(role="user", content="hello")],
@@ -333,3 +345,127 @@ def test_after_tool_call_force_finish_skips_follow_up() -> None:
     assert stub_client.called is True
     assert executed is True
     assert [event_type for event_type, _ in published] == [EventType.FORCE_FINISH_REQUESTED]
+
+
+def test_length_truncation_auto_repair_retries_and_executes_valid_tool() -> None:
+    planner = _build_planner()
+    stub_client = SequencedStubClient(
+        [
+            ChatResult(
+                text="",
+                tool_calls=[ToolCall(id="tc_1", name="run_command", arguments='{"command":"pwd"')],
+                finish_reason="length",
+            ),
+            ChatResult(
+                text="",
+                tool_calls=[ToolCall(id="tc_2", name="run_command", arguments='{"command":"pwd"}')],
+                finish_reason="tool_calls",
+            ),
+        ]
+    )
+    executed_args: list[str] = []
+
+    async def fake_run_stage(stage, hook_context, payload, enabled_groups=None):
+        return HookStageOutput(status=HookStatus.SKIP, patched_payload=payload)
+
+    async def fake_context_pipeline_run(**kwargs):
+        hook_context = _make_hook_context(kwargs["session_id"])
+        return (
+            BeforeLlmCallHookPayload(
+                turn=_make_turn_context(kwargs["session_id"]),
+                tools=[],
+                token_budget=None,
+            ),
+            hook_context,
+        )
+
+    async def fake_after_llm_response(**kwargs):
+        return AfterLlmResponseHookPayload(
+            session_id=kwargs["hook_context"].session_id,
+            task_type=kwargs["hook_context"].task_type,
+            is_sub_session=False,
+            enabled_groups=["CoreOperations"],
+            message_text=None,
+            tool_calls=kwargs["tool_calls"],
+            raw_llm_result=kwargs["llm_response"],
+        )
+
+    async def fake_execute(**kwargs):
+        executed_args.append(kwargs["arguments_json"])
+        return "ok"
+
+    planner.resolve_llm_client = lambda task_type: stub_client
+    planner.hook_stage_runner.run_stage = fake_run_stage
+    planner.context_pipeline.run = fake_context_pipeline_run
+    planner.tool_pipeline.run_after_llm_response = fake_after_llm_response
+    planner.tool_runtime.execute = fake_execute
+
+    asyncio.run(
+        planner.process_turn(TurnRequest(session_id="sess_force", user_segments=(), runtime=TurnRuntimePrefs(task_type="general")))
+    )
+
+    assert stub_client.called == 2
+    assert executed_args == ['{"command":"pwd"}']
+
+
+def test_length_truncation_auto_repair_still_invalid_skips_tool_execution() -> None:
+    planner = _build_planner()
+    stub_client = SequencedStubClient(
+        [
+            ChatResult(
+                text="",
+                tool_calls=[ToolCall(id="tc_1", name="run_command", arguments='{"command":"pwd"')],
+                finish_reason="length",
+            ),
+            ChatResult(
+                text="",
+                tool_calls=[ToolCall(id="tc_2", name="run_command", arguments='{"command":"pwd"')],
+                finish_reason="length",
+            ),
+        ]
+    )
+    executed = False
+
+    async def fake_run_stage(stage, hook_context, payload, enabled_groups=None):
+        return HookStageOutput(status=HookStatus.SKIP, patched_payload=payload)
+
+    async def fake_context_pipeline_run(**kwargs):
+        hook_context = _make_hook_context(kwargs["session_id"])
+        return (
+            BeforeLlmCallHookPayload(
+                turn=_make_turn_context(kwargs["session_id"]),
+                tools=[],
+                token_budget=None,
+            ),
+            hook_context,
+        )
+
+    async def fake_after_llm_response(**kwargs):
+        return AfterLlmResponseHookPayload(
+            session_id=kwargs["hook_context"].session_id,
+            task_type=kwargs["hook_context"].task_type,
+            is_sub_session=False,
+            enabled_groups=["CoreOperations"],
+            message_text=kwargs["llm_response"].text,
+            tool_calls=kwargs["tool_calls"],
+            raw_llm_result=kwargs["llm_response"],
+        )
+
+    async def fake_execute(**kwargs):
+        nonlocal executed
+        executed = True
+        return "ok"
+
+    planner.resolve_llm_client = lambda task_type: stub_client
+    planner.hook_stage_runner.run_stage = fake_run_stage
+    planner.context_pipeline.run = fake_context_pipeline_run
+    planner.tool_pipeline.run_after_llm_response = fake_after_llm_response
+    planner.tool_runtime.execute = fake_execute
+    asyncio.run(
+        planner.process_turn(
+            TurnRequest(session_id="sess_force", user_segments=(), runtime=TurnRuntimePrefs(task_type="general"))
+        )
+    )
+
+    assert stub_client.called == 2
+    assert executed is False

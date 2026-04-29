@@ -273,6 +273,12 @@ class Planner(BasePlanner):
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("LLM Prompt: %s", json.dumps(openai_messages, ensure_ascii=False, indent=2))
         chat_result = await current_llm_client.chat_with_tools(messages=openai_messages, tools=openai_tools)
+        chat_result = await self._repair_length_truncated_tool_calls_if_needed(
+            llm_client=current_llm_client,
+            messages=openai_messages,
+            tools=openai_tools,
+            chat_result=chat_result,
+        )
         # Normalize tool-call ids for stored history and the next LLM request. Provider ids are arbitrary;
         # the API only requires assistant tool_calls[].id and following tool.tool_call_id to match in our payload.
         llm_tool_calls = [
@@ -313,6 +319,87 @@ class Planner(BasePlanner):
             usage_completion_tokens=chat_result.completion_tokens,
             usage_total_tokens=chat_result.total_tokens,
             force_finish=after_llm_directive,
+        )
+
+    def _has_invalid_tool_args_json(self, tool_calls: list[LlmToolCallRequest]) -> bool:
+        """Return True when at least one tool call contains malformed JSON arguments."""
+        for call in tool_calls:
+            args = call.arguments_json
+            if not isinstance(args, str):
+                continue
+            try:
+                json.loads(args)
+            except json.JSONDecodeError:
+                return True
+        return False
+
+    def _needs_length_truncation_repair(self, chat_result: ChatResult, tool_calls: list[LlmToolCallRequest]) -> bool:
+        """Detect truncated response that likely cut tool-call JSON."""
+        finish_reason = (chat_result.finish_reason or "").strip().lower()
+        if finish_reason != "length":
+            return False
+        if not tool_calls:
+            return False
+        return self._has_invalid_tool_args_json(tool_calls)
+
+    async def _repair_length_truncated_tool_calls_if_needed(
+        self,
+        *,
+        llm_client: object,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]] | None,
+        chat_result: ChatResult,
+    ) -> ChatResult:
+        """Retry once with a compact repair prompt when tool-call arguments are truncated."""
+        provisional_calls = [
+            LlmToolCallRequest(
+                call_id=make_short_tool_call_id(call.id, index),
+                name=call.name,
+                arguments_json=call.arguments,
+            )
+            for index, call in enumerate(chat_result.tool_calls)
+        ]
+        if not self._needs_length_truncation_repair(chat_result, provisional_calls):
+            return chat_result
+
+        logger.warning(
+            "Detected finish_reason=length with malformed tool JSON; retrying a compact repair turn."
+        )
+        repair_messages = list(messages)
+        repair_messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "Your previous response was truncated (finish_reason=length) and produced malformed "
+                    "tool_call arguments JSON. Re-emit only the necessary tool_calls with complete, valid JSON "
+                    "arguments. Keep output minimal and do not include extra prose."
+                ),
+            }
+        )
+        retry_result = await llm_client.chat_with_tools(messages=repair_messages, tools=tools)
+        retry_calls = [
+            LlmToolCallRequest(
+                call_id=make_short_tool_call_id(call.id, index),
+                name=call.name,
+                arguments_json=call.arguments,
+            )
+            for index, call in enumerate(retry_result.tool_calls)
+        ]
+        if retry_calls and not self._has_invalid_tool_args_json(retry_calls):
+            return retry_result
+        logger.error(
+            "Tool-call repair after finish_reason=length still returned malformed JSON; skipping tool execution."
+        )
+        return ChatResult(
+            text=(
+                "Model output was truncated by upstream token limit and tool arguments stayed malformed after auto-repair. "
+                "Skipped tool execution this turn to avoid invalid-call loops. Please retry with a smaller output scope."
+            ),
+            tool_calls=[],
+            prompt_tokens=retry_result.prompt_tokens,
+            completion_tokens=retry_result.completion_tokens,
+            total_tokens=retry_result.total_tokens,
+            finish_reason=retry_result.finish_reason,
         )
 
     async def _run_main_session_turn(self, request: TurnRequest) -> None:

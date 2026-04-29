@@ -110,6 +110,7 @@ class ChatResult:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
+    finish_reason: str | None = None
 
 
 class OpenAICompatibleLLMClient:
@@ -773,6 +774,7 @@ class OpenAICompatibleLLMClient:
             prompt_tokens=int(prompt_tokens) if isinstance(prompt_tokens, int) else None,
             completion_tokens=int(completion_tokens) if isinstance(completion_tokens, int) else None,
             total_tokens=int(total_tokens) if isinstance(total_tokens, int) else None,
+            finish_reason=str(choices[0].get("finish_reason")) if isinstance(choices[0], dict) else None,
         )
 
     def _normalize_message_content(self, content: Any) -> str:
