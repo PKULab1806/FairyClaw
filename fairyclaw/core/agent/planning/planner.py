@@ -41,7 +41,7 @@ from fairyclaw.core.agent.types import SessionKind, TurnRequest, TurnRuntimePref
 from fairyclaw.core.domain import ContentSegment
 from fairyclaw.core.events.bus import EventType
 from fairyclaw.core.events.runtime import publish_runtime_event
-from fairyclaw.infrastructure.llm.client import ChatResult
+from fairyclaw.infrastructure.llm.client import LlmModelResponse
 
 from .planner_core import BasePlanner
 from .turn_policy import MainSessionTurnPolicy, SubSessionTurnPolicy, TurnExecutionPolicy
@@ -283,9 +283,9 @@ class Planner(BasePlanner):
         # the API only requires assistant tool_calls[].id and following tool.tool_call_id to match in our payload.
         llm_tool_calls = [
             LlmToolCallRequest(
-                call_id=make_short_tool_call_id(call.id, index),
+                call_id=make_short_tool_call_id(call.call_id, index),
                 name=call.name,
-                arguments_json=call.arguments,
+                arguments_json=call.arguments_json,
             )
             for index, call in enumerate(chat_result.tool_calls)
         ]
@@ -333,7 +333,7 @@ class Planner(BasePlanner):
                 return True
         return False
 
-    def _needs_length_truncation_repair(self, chat_result: ChatResult, tool_calls: list[LlmToolCallRequest]) -> bool:
+    def _needs_length_truncation_repair(self, chat_result: LlmModelResponse, tool_calls: list[LlmToolCallRequest]) -> bool:
         """Detect truncated response that likely cut tool-call JSON."""
         finish_reason = (chat_result.finish_reason or "").strip().lower()
         if finish_reason != "length":
@@ -348,14 +348,14 @@ class Planner(BasePlanner):
         llm_client: object,
         messages: list[dict[str, object]],
         tools: list[dict[str, object]] | None,
-        chat_result: ChatResult,
-    ) -> ChatResult:
+        chat_result: LlmModelResponse,
+    ) -> LlmModelResponse:
         """Retry once with a compact repair prompt when tool-call arguments are truncated."""
         provisional_calls = [
             LlmToolCallRequest(
-                call_id=make_short_tool_call_id(call.id, index),
+                call_id=make_short_tool_call_id(call.call_id, index),
                 name=call.name,
-                arguments_json=call.arguments,
+                arguments_json=call.arguments_json,
             )
             for index, call in enumerate(chat_result.tool_calls)
         ]
@@ -379,9 +379,9 @@ class Planner(BasePlanner):
         retry_result = await llm_client.chat_with_tools(messages=repair_messages, tools=tools)
         retry_calls = [
             LlmToolCallRequest(
-                call_id=make_short_tool_call_id(call.id, index),
+                call_id=make_short_tool_call_id(call.call_id, index),
                 name=call.name,
-                arguments_json=call.arguments,
+                arguments_json=call.arguments_json,
             )
             for index, call in enumerate(retry_result.tool_calls)
         ]
@@ -390,7 +390,7 @@ class Planner(BasePlanner):
         logger.error(
             "Tool-call repair after finish_reason=length still returned malformed JSON; skipping tool execution."
         )
-        return ChatResult(
+        return LlmModelResponse(
             text=(
                 "Model output was truncated by upstream token limit and tool arguments stayed malformed after auto-repair. "
                 "Skipped tool execution this turn to avoid invalid-call loops. Please retry with a smaller output scope."

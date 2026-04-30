@@ -19,7 +19,7 @@ from fairyclaw.core.agent.hooks.protocol import (
 from fairyclaw.core.agent.planning.planner import Planner
 from fairyclaw.core.agent.types import TurnRequest, TurnRuntimePrefs
 from fairyclaw.core.events.bus import EventType
-from fairyclaw.infrastructure.llm.client import ChatResult, ToolCall
+from fairyclaw.infrastructure.llm.client import ChatResult
 
 
 class StubClient:
@@ -125,7 +125,7 @@ def test_after_llm_force_finish_skips_tool_execution_and_follow_up() -> None:
     stub_client = StubClient(
         ChatResult(
             text="",
-            tool_calls=[ToolCall(id="tc_1", name="run_command", arguments='{"command":"pwd"}')],
+            tool_calls=[LlmToolCallRequest(call_id="tc_1", name="run_command", arguments_json='{"command":"pwd"}')],
         )
     )
     published: list[tuple[EventType, dict[str, object]]] = []
@@ -193,7 +193,7 @@ def test_before_tool_call_force_finish_skips_tool_and_follow_up() -> None:
     stub_client = StubClient(
         ChatResult(
             text="",
-            tool_calls=[ToolCall(id="tc_1", name="run_command", arguments='{"command":"pwd"}')],
+            tool_calls=[LlmToolCallRequest(call_id="tc_1", name="run_command", arguments_json='{"command":"pwd"}')],
         )
     )
     published: list[tuple[EventType, dict[str, object]]] = []
@@ -272,7 +272,7 @@ def test_after_tool_call_force_finish_skips_follow_up() -> None:
     stub_client = StubClient(
         ChatResult(
             text="",
-            tool_calls=[ToolCall(id="tc_1", name="run_command", arguments='{"command":"pwd"}')],
+            tool_calls=[LlmToolCallRequest(call_id="tc_1", name="run_command", arguments_json='{"command":"pwd"}')],
         )
     )
     published: list[tuple[EventType, dict[str, object]]] = []
@@ -353,12 +353,12 @@ def test_length_truncation_auto_repair_retries_and_executes_valid_tool() -> None
         [
             ChatResult(
                 text="",
-                tool_calls=[ToolCall(id="tc_1", name="run_command", arguments='{"command":"pwd"')],
+                tool_calls=[LlmToolCallRequest(call_id="tc_1", name="run_command", arguments_json='{"command":"pwd"')],
                 finish_reason="length",
             ),
             ChatResult(
                 text="",
-                tool_calls=[ToolCall(id="tc_2", name="run_command", arguments='{"command":"pwd"}')],
+                tool_calls=[LlmToolCallRequest(call_id="tc_2", name="run_command", arguments_json='{"command":"pwd"}')],
                 finish_reason="tool_calls",
             ),
         ]
@@ -414,12 +414,12 @@ def test_length_truncation_auto_repair_still_invalid_skips_tool_execution() -> N
         [
             ChatResult(
                 text="",
-                tool_calls=[ToolCall(id="tc_1", name="run_command", arguments='{"command":"pwd"')],
+                tool_calls=[LlmToolCallRequest(call_id="tc_1", name="run_command", arguments_json='{"command":"pwd"')],
                 finish_reason="length",
             ),
             ChatResult(
                 text="",
-                tool_calls=[ToolCall(id="tc_2", name="run_command", arguments='{"command":"pwd"')],
+                tool_calls=[LlmToolCallRequest(call_id="tc_2", name="run_command", arguments_json='{"command":"pwd"')],
                 finish_reason="length",
             ),
         ]

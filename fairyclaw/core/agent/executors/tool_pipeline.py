@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from fairyclaw.infrastructure.llm.client import ChatResult
+from fairyclaw.infrastructure.llm.client import LlmModelResponse
 
 from fairyclaw.core.agent.hooks.hook_stage_runner import HookStageRunner
 from fairyclaw.core.agent.hooks.protocol import (
@@ -23,7 +23,7 @@ class ToolPipelineExecutor:
         stage_runner: HookStageRunner,
         hook_context: HookExecutionContext,
         enabled_groups: list[str],
-        llm_response: ChatResult,
+        llm_response: LlmModelResponse,
         tool_calls: list[LlmToolCallRequest],
     ) -> AfterLlmResponseHookPayload:
         """Run `after_llm_response` stage and return patched payload."""

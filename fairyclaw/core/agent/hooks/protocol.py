@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Generic, TypeAlias, TypeVar
 from fairyclaw.core.agent.context.history_ir import ChatHistoryItem, UserTurn
 
 if TYPE_CHECKING:
-    from fairyclaw.infrastructure.llm.client import ChatResult
+    from fairyclaw.infrastructure.llm.client import LlmModelResponse
 
 JsonPrimitive: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"]
@@ -313,7 +313,7 @@ class AfterLlmResponseHookPayload:
     enabled_groups: list[str]
     message_text: str | None
     tool_calls: list[LlmToolCallRequest]
-    raw_llm_result: ChatResult | None
+    raw_llm_result: LlmModelResponse | None
     force_finish: bool = False
     force_finish_reason: str | None = None
 

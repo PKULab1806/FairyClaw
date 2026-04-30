@@ -5,7 +5,7 @@
 This module wraps OpenAI-compatible chat endpoints and handles:
 1. plain chat requests and tool-enabled chat requests;
 2. retry logic and error logging;
-3. normalization into the runtime `ChatResult` structure.
+3. normalization into the runtime `LlmModelResponse` structure.
 """
 
 import asyncio
@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fairyclaw.config.settings import settings
+from fairyclaw.core.agent.hooks.protocol import LlmToolCallRequest
 from fairyclaw.infrastructure.llm.config import LLMEndpointProfile
 from fairyclaw.infrastructure.llm.image_edit_transport import resolve_image_edit_transport
 
@@ -40,6 +41,16 @@ _HTTP_IMAGE_FILE_URL_RE = re.compile(
     re.IGNORECASE,
 )
 _DATA_IMAGE_IN_TEXT_RE = re.compile(r"data:image/[^;\s]+;base64,[A-Za-z0-9+/=]+", re.IGNORECASE)
+
+
+def _is_responses_profile(profile: LLMEndpointProfile) -> bool:
+    """Return True when profile should use OpenAI Responses API.
+
+    Policy: auto-enable Responses API for GPT-5 family models without requiring
+    any YAML format changes.
+    """
+    model = str(profile.model or "").strip().lower()
+    return bool(re.search(r"(^|/)gpt-5([.-]|$)", model))
 
 
 def _dedupe_preserve_order(urls: list[str]) -> list[str]:
@@ -88,25 +99,21 @@ def _dig_json_path(obj: Any, path: str) -> Any:
 
 
 @dataclass
-class ToolCall:
-    """Represent one tool call returned by model response."""
+class LlmTokenUsage:
+    """Typed token usage returned by model response."""
 
-    id: str
-    name: str
-    arguments: str
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
 
 
 @dataclass
-class ChatResult:
-    """Represent normalized model response payload.
-
-    Attributes:
-        text (str): Plain text response.
-        tool_calls (list[ToolCall]): Parsed tool-call list.
-    """
+class LlmModelResponse:
+    """Represent normalized typed model response payload."""
 
     text: str
-    tool_calls: list[ToolCall]
+    tool_calls: list[LlmToolCallRequest]
+    usage: LlmTokenUsage | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
@@ -163,7 +170,9 @@ class OpenAICompatibleLLMClient:
         result = await self.chat_with_tools(messages=messages, tools=None)
         return result.text
 
-    async def chat_with_tools(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None) -> ChatResult:
+    async def chat_with_tools(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None
+    ) -> LlmModelResponse:
         """Run chat request with optional tools and fallback handling.
 
         Args:
@@ -171,7 +180,7 @@ class OpenAICompatibleLLMClient:
             tools (list[dict[str, Any]] | None): OpenAI-style tool schemas.
 
         Returns:
-            ChatResult: Normalized model response.
+            LlmModelResponse: Normalized model response.
 
         Raises:
             Exception: Re-raises primary or fallback exception when both attempts fail.
@@ -207,7 +216,7 @@ class OpenAICompatibleLLMClient:
         profile: LLMEndpointProfile,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
-    ) -> ChatResult:
+    ) -> LlmModelResponse:
         """Execute one chat request against a specific endpoint profile.
 
         Args:
@@ -216,7 +225,7 @@ class OpenAICompatibleLLMClient:
             tools (list[dict[str, Any]] | None): Optional tool schemas.
 
         Returns:
-            ChatResult: Parsed response payload.
+            LlmModelResponse: Parsed response payload.
 
         Raises:
             RuntimeError: Raised when API key is missing or payload contains explicit error.
@@ -226,14 +235,30 @@ class OpenAICompatibleLLMClient:
         api_key = os.getenv(profile.api_key_env, "").strip()
         if not api_key:
             raise RuntimeError(f"Missing API key env: {profile.api_key_env}")
-        payload = {
-            "model": profile.model,
-            "messages": messages,
-            "temperature": profile.temperature,
-        }
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = TOOL_CHOICE_AUTO
+        if _is_responses_profile(profile):
+            payload = {
+                "model": profile.model,
+                "input": messages,
+            }
+            if tools:
+                payload["tools"] = [
+                    (
+                        {"type": "function", **x["function"]}
+                        if isinstance(x, dict) and x.get("type") == "function" and isinstance(x.get("function"), dict)
+                        else x
+                    )
+                    for x in tools
+                ]
+                payload["tool_choice"] = TOOL_CHOICE_AUTO
+        else:
+            payload = {
+                "model": profile.model,
+                "messages": messages,
+                "temperature": profile.temperature,
+            }
+            if tools:
+                payload["tools"] = tools
+                payload["tool_choice"] = TOOL_CHOICE_AUTO
         data: dict[str, Any] = {}
         for attempt in range(DEFAULT_MAX_RETRIES):
             try:
@@ -285,7 +310,9 @@ class OpenAICompatibleLLMClient:
                     f"{type(e).__name__} - {e}"
                 )
                 raise
-        return self._parse_chat_result(data)
+        if _is_responses_profile(profile):
+            return self._parse_responses_result(data)
+        return self._parse_chat_completion_result(data)
 
     async def generate_image_edit(
         self,
@@ -457,6 +484,9 @@ class OpenAICompatibleLLMClient:
         # Reins/OpenAI instrumentation can use metadata for downstream tracing.
         if metadata:
             request_args["metadata"] = metadata
+        if _is_responses_profile(profile):
+            response = await client.responses.create(**request_args)
+            return response.model_dump()
         completion = await client.chat.completions.create(**request_args)
         return completion.model_dump()
 
@@ -686,7 +716,7 @@ class OpenAICompatibleLLMClient:
         return getattr(reins_mod, "trace", None)
 
     @staticmethod
-    def _parse_dsml_tool_calls(reasoning: str) -> list[ToolCall]:
+    def _parse_dsml_tool_calls(reasoning: str) -> list[LlmToolCallRequest]:
         """Parse DeepSeek DSML-format tool calls from reasoning_content.
 
         DeepSeek-v3 series models occasionally emit tool calls inside
@@ -705,7 +735,7 @@ class OpenAICompatibleLLMClient:
         """
         if not reasoning or "<｜DSML｜" not in reasoning:
             return []
-        calls: list[ToolCall] = []
+        calls: list[LlmToolCallRequest] = []
         invoke_pattern = re.compile(
             r"<｜DSML｜invoke\s+name=['\"]([^'\"]+)['\"]>(.*?)</｜DSML｜invoke>",
             re.DOTALL,
@@ -721,40 +751,39 @@ class OpenAICompatibleLLMClient:
             for param_match in param_pattern.finditer(invoke_body):
                 arguments[param_match.group(1).strip()] = param_match.group(2).strip()
             calls.append(
-                ToolCall(
-                    id=f"dsml_{uuid.uuid4().hex[:8]}",
+                LlmToolCallRequest(
+                    call_id=f"dsml_{uuid.uuid4().hex[:8]}",
                     name=tool_name,
-                    arguments=json.dumps(arguments, ensure_ascii=False),
+                    arguments_json=json.dumps(arguments, ensure_ascii=False),
                 )
             )
         return calls
 
-    def _parse_chat_result(self, data: dict[str, Any]) -> ChatResult:
-        """Parse raw API payload into ChatResult structure.
+    @staticmethod
+    def _build_usage(*, prompt_tokens: Any, completion_tokens: Any, total_tokens: Any) -> LlmTokenUsage:
+        return LlmTokenUsage(
+            prompt_tokens=int(prompt_tokens) if isinstance(prompt_tokens, int) else None,
+            completion_tokens=int(completion_tokens) if isinstance(completion_tokens, int) else None,
+            total_tokens=int(total_tokens) if isinstance(total_tokens, int) else None,
+        )
 
-        Args:
-            data (dict[str, Any]): API response payload.
-
-        Returns:
-            ChatResult: Normalized text and tool-call list.
-        """
+    def _parse_chat_completion_result(self, data: dict[str, Any]) -> LlmModelResponse:
+        """Parse chat-completions payload into typed model response."""
         choices = data.get("choices", []) if isinstance(data, dict) else []
         if not choices:
-            return ChatResult(text="", tool_calls=[])
+            return LlmModelResponse(text="", tool_calls=[], usage=LlmTokenUsage())
         message = choices[0].get("message", {})
         text = self._normalize_message_content(message.get("content"))
-        calls: list[ToolCall] = []
+        calls: list[LlmToolCallRequest] = []
         for call in message.get("tool_calls", []) or []:
             function = call.get("function", {})
             calls.append(
-                ToolCall(
-                    id=str(call.get("id", "")),
+                LlmToolCallRequest(
+                    call_id=str(call.get("id", "")),
                     name=str(function.get("name", "")),
-                    arguments=str(function.get("arguments", "{}")),
+                    arguments_json=str(function.get("arguments", "{}")),
                 )
             )
-        # Fall back to DSML tool calls embedded in reasoning_content when the
-        # standard tool_calls field is empty (DeepSeek-v3 series behaviour).
         if not calls:
             reasoning = message.get("reasoning_content") or ""
             dsml_calls = self._parse_dsml_tool_calls(reasoning)
@@ -764,17 +793,77 @@ class OpenAICompatibleLLMClient:
                     len(dsml_calls),
                 )
                 calls = dsml_calls
-        usage = data.get("usage", {}) if isinstance(data, dict) else {}
-        prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
-        completion_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
-        total_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
-        return ChatResult(
+        usage_raw = data.get("usage", {}) if isinstance(data, dict) else {}
+        usage = self._build_usage(
+            prompt_tokens=usage_raw.get("prompt_tokens") if isinstance(usage_raw, dict) else None,
+            completion_tokens=usage_raw.get("completion_tokens") if isinstance(usage_raw, dict) else None,
+            total_tokens=usage_raw.get("total_tokens") if isinstance(usage_raw, dict) else None,
+        )
+        return LlmModelResponse(
             text=text,
             tool_calls=calls,
-            prompt_tokens=int(prompt_tokens) if isinstance(prompt_tokens, int) else None,
-            completion_tokens=int(completion_tokens) if isinstance(completion_tokens, int) else None,
-            total_tokens=int(total_tokens) if isinstance(total_tokens, int) else None,
+            usage=usage,
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            total_tokens=usage.total_tokens,
             finish_reason=str(choices[0].get("finish_reason")) if isinstance(choices[0], dict) else None,
+        )
+
+    def _parse_responses_result(self, data: dict[str, Any]) -> LlmModelResponse:
+        """Parse responses-api payload into typed model response."""
+        output = data.get("output") if isinstance(data, dict) else None
+        text_parts: list[str] = []
+        calls: list[LlmToolCallRequest] = []
+        if isinstance(output, list):
+            for item in output:
+                if not isinstance(item, dict):
+                    continue
+                typ = str(item.get("type") or "")
+                if typ in {"function_call", "tool_call"}:
+                    calls.append(
+                        LlmToolCallRequest(
+                            call_id=str(item.get("call_id") or item.get("id") or ""),
+                            name=str(item.get("name") or ""),
+                            arguments_json=str(item.get("arguments") or "{}"),
+                        )
+                    )
+                    continue
+                if typ == "message":
+                    for part in item.get("content") or []:
+                        if isinstance(part, dict) and part.get("type") in {"output_text", "text"}:
+                            txt = part.get("text")
+                            if isinstance(txt, str) and txt.strip():
+                                text_parts.append(txt.strip())
+        usage_raw = data.get("usage") if isinstance(data, dict) else {}
+        usage = self._build_usage(
+            prompt_tokens=usage_raw.get("input_tokens") if isinstance(usage_raw, dict) else None,
+            completion_tokens=usage_raw.get("output_tokens") if isinstance(usage_raw, dict) else None,
+            total_tokens=usage_raw.get("total_tokens") if isinstance(usage_raw, dict) else None,
+        )
+        status = str(data.get("status") or "") if isinstance(data, dict) else ""
+        incomplete_reason = ""
+        incomplete_details = data.get("incomplete_details") if isinstance(data, dict) else None
+        if isinstance(incomplete_details, dict):
+            incomplete_reason = str(incomplete_details.get("reason") or "").strip().lower()
+        is_length_like = status == "incomplete" and incomplete_reason in {
+            "max_output_tokens",
+            "max_completion_tokens",
+            "length",
+        }
+        if is_length_like:
+            finish_reason = "length"
+        elif calls:
+            finish_reason = "tool_calls"
+        else:
+            finish_reason = status or None
+        return LlmModelResponse(
+            text="\n".join(text_parts).strip(),
+            tool_calls=calls,
+            usage=usage,
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            total_tokens=usage.total_tokens,
+            finish_reason=finish_reason,
         )
 
     def _normalize_message_content(self, content: Any) -> str:
@@ -825,3 +914,6 @@ class OpenAICompatibleLLMClient:
             "==========================================="
         )
         logger.error(error_details)
+
+
+ChatResult = LlmModelResponse
