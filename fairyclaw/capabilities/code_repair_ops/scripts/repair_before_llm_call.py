@@ -62,6 +62,8 @@ async def execute_hook(
         "- If required artifact files are configured, make sure they exist before finishing.",
         "- Use patching only via repair_apply_unified_patch.",
         "- For repair_run_verification, each check must be {name, type, args}.",
+        "- For repair_run_verification with type=command, allowed command prefixes are only: pytest, python, python3, test , git status, git diff, git log, git merge-base, git rev-parse, sed -n, rg, ls, cat, pwd.",
+        "- Verification commands are read/test only. Do NOT use mutating commands (e.g. sed -i, rm, mv, cp, touch) and do NOT chain commands with &&.",
     ]
     if gate_reasons:
         guidance.append(f"- Must resolve gate failures first: {gate_reasons[:6]}")

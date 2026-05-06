@@ -83,32 +83,45 @@ def _apply_patch(source: str, patch_text: str) -> tuple[str | None, str]:
     cursor = 0
     for hunk in hunks:
         body = hunk[1:]
-        context_before = [l[1:] for l in body if l.startswith(" ")]
-        if not context_before:
-            # Accept loose hunk lines without prefix as context (common model output).
-            context_before = [l for l in body if l and not l.startswith(("+", "-", "@@"))]
-        removals = [l[1:] for l in body if l.startswith("-")]
-        additions = [l[1:] for l in body if l.startswith("+")]
-        if not removals and not additions:
+        expected_old: list[str] = []
+        replacement_new: list[str] = []
+        for line in body:
+            if line.startswith(" "):
+                text = line[1:]
+                expected_old.append(text)
+                replacement_new.append(text)
+            elif line.startswith("-"):
+                expected_old.append(line[1:])
+            elif line.startswith("+"):
+                replacement_new.append(line[1:])
+            elif line and not line.startswith("@@"):
+                # Accept loose hunk lines without prefix as context (common model output).
+                expected_old.append(line)
+                replacement_new.append(line)
+
+        has_removals = any(line.startswith("-") for line in body)
+        has_additions = any(line.startswith("+") for line in body)
+        if not has_removals and not has_additions:
             continue
-        idx = _find_anchor(lines, context_before, cursor)
-        if idx < 0:
-            idx = 0
-        # Find exact removable block near anchor.
-        rm_idx = _find_sequence(lines, removals, idx)
-        if rm_idx < 0 and removals:
-            # Fallback: global unique removal block match.
-            rm_idx = _find_sequence(lines, removals, 0)
-        if rm_idx < 0:
-            return None, "removal lines do not match target file"
-        if removals:
-            del lines[rm_idx: rm_idx + len(removals)]
-        if additions:
-            add_lines = [a + "\n" for a in additions]
-            lines[rm_idx:rm_idx] = add_lines
-            cursor = rm_idx + len(add_lines)
-        else:
-            cursor = rm_idx
+
+        if has_removals:
+            block_idx = _find_sequence(lines, expected_old, cursor)
+            if block_idx < 0:
+                block_idx = _find_sequence(lines, expected_old, 0)
+            if block_idx < 0:
+                return None, "removal lines do not match target file"
+            replacement_lines = [l + "\n" for l in replacement_new]
+            lines[block_idx : block_idx + len(expected_old)] = replacement_lines
+            cursor = block_idx + len(replacement_lines)
+            continue
+
+        # Pure insertion hunk: anchor using existing unchanged lines.
+        anchor_idx = _find_anchor(lines, expected_old, cursor)
+        if anchor_idx < 0:
+            anchor_idx = max(0, min(cursor, len(lines)))
+        add_lines = [l[1:] + "\n" for l in body if l.startswith("+")]
+        lines[anchor_idx:anchor_idx] = add_lines
+        cursor = anchor_idx + len(add_lines)
     return "".join(lines), "ok"
 
 

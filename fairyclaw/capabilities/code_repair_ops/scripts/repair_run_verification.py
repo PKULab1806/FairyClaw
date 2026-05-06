@@ -84,6 +84,14 @@ async def _run_check(raw: Any, workspace_root: str, command_allow_prefixes: list
                 "passed": False,
                 "detail": "command not allowed by policy",
             }
+        policy_error = _command_policy_violation(command)
+        if policy_error:
+            return {
+                "name": name,
+                "type": check_type,
+                "passed": False,
+                "detail": policy_error,
+            }
         proc = await asyncio.create_subprocess_shell(
             command,
             cwd=workspace_root,
@@ -169,4 +177,39 @@ async def _run_check(raw: Any, workspace_root: str, command_allow_prefixes: list
             "detail": "ok" if rc == 0 else f"merge-base rc={rc}",
         }
     return {"name": name, "type": check_type, "passed": False, "detail": f"unsupported check type: {check_type}"}
+
+
+def _command_policy_violation(command: str) -> str | None:
+    lowered = command.lower()
+    if "&&" in command or "||" in command or ";" in command:
+        return "command not allowed by policy: command chaining is forbidden"
+    blocked_tokens = [
+        " sed -i",
+        " rm ",
+        " mv ",
+        " cp ",
+        " touch ",
+        " tee ",
+        " >",
+        ">>",
+    ]
+    padded = f" {lowered} "
+    if any(token in padded for token in blocked_tokens):
+        return "command not allowed by policy: mutating shell command is forbidden"
+    if lowered.startswith("python -c") or lowered.startswith("python3 -c"):
+        mutating_snippets = [
+            "open(",
+            ".write(",
+            "pathlib.path(",
+            "write_text(",
+            "append(",
+            "unlink(",
+            "rename(",
+            "replace(",
+            "mkdir(",
+            "rmdir(",
+        ]
+        if any(snippet in lowered for snippet in mutating_snippets):
+            return "command not allowed by policy: mutating python -c command is forbidden"
+    return None
 

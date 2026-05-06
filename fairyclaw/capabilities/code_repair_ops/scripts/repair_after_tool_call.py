@@ -29,7 +29,8 @@ async def execute_hook(
     state["last_tool_status"] = payload.tool_status
     state["last_tool_ts_ms"] = int(time.time() * 1000)
     if payload.request.name == "repair_apply_unified_patch":
-        state["phase"] = "verify"
+        # Only advance to verify when patching actually succeeds.
+        state["phase"] = "verify" if payload.tool_status == "ok" else "patch"
     elif payload.request.name == "repair_run_verification":
         state["phase"] = "report" if bool(state.get("verification_passed")) else "patch"
     elif payload.request.name == "repair_write_artifacts":
